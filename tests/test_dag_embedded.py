@@ -12,7 +12,10 @@ Skipped unless BOTH hold: ``deephaven_server`` is importable (``pip install -e .
 from __future__ import annotations
 
 import faulthandler
+import http.server
+import json
 import os
+import threading
 import time
 from typing import Any, Dict, List
 
@@ -418,3 +421,148 @@ def test_amps_disconnect_and_resnapshot_drive_feed_health(amps_feed):
     assert all(r["SnapshotInProgress"] is False for r in status.values())
     topics = by_key(source.topics_table(), "System", "Topic")
     assert all(r["Epoch"] == 2 and r["Connected"] is True for r in topics.values())
+
+
+# -- break events and alerts (docs/design/04 §7, 08 §2) -----------------------------------------------
+
+class _SinkHandler(http.server.BaseHTTPRequestHandler):
+    received: List[Dict[str, Any]] = []
+
+    def do_POST(self):  # noqa: N802 - http.server API
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        _SinkHandler.received.append(json.loads(body))
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *_):
+        pass
+
+
+@pytest.fixture(scope="module")
+def sink_url():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _SinkHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}/alerts"
+    server.shutdown()
+
+
+def _event_keys(table) -> Dict[tuple, int]:
+    from collections import Counter
+
+    from oms_trace import alerting
+
+    return Counter(alerting.event_key(r) for r in rows(table))
+
+
+def _alert_tuples(alerts) -> List[tuple]:
+    return sorted((a.id, a.ts, a.metric, a.key, a.value, a.threshold, a.severity, a.message) for a in alerts)
+
+
+def _alert_rows(table) -> List[tuple]:
+    return sorted((r["AlertId"], r["Ts"], r["Metric"], r["Key"], r["Value"], r["Threshold"], r["Severity"], r["Message"])
+                  for r in rows(table))
+
+
+def test_break_events_and_alerts_follow_the_oracle_step_by_step(server, settings, sink_url):
+    """Input tables and a clock the test advances: every transition and every alert the engine
+    emits equals the oracle's diff of consecutive states and the shared policy on its observations."""
+    from deephaven import dtypes, input_table
+
+    from oms_trace import alerting, dag, events, sources
+
+    SEC = mockdata.SEC
+    t0 = mockdata.NOW
+    book = mockdata.Book()
+    heal = mockdata.family(book, "HEAL", recv=t0 - 60 * SEC)  # Bc1 withheld: Bp is short, Cp1 unresolved
+    trn = mockdata.family(book, "TRN", splits=[600, 400], cc_splits=[[300, 300], [400]], recv=t0 - 10 * SEC)
+    mockdata._set(book, "C", trn.ids["Cp2"], CumQty=300, LeavesQty=100)  # 10 s old: TRANSIENT, drift after 30 s
+    mockdata._set(book, "C", trn.ids["Cc2a"], CumQty=300, LeavesQty=100)
+    late = book.last("B", heal.ids["Bc1"])
+    rows0 = {s: [r for r in book.rows[s] if r["OrderId"] != heal.ids["Bc1"]] for s in config.SYSTEMS}
+    # a two-family book gets no new rows for six minutes: keep the channel and system staleness rules
+    # out of the way (they have their own tests) so the gap, link and drift rules are what is observed
+    cfg = mockdata.settings_for(book, settings).with_(unresolved_alert_sec=30, feed_stale_sec=3600, feed_catchup_sec=7200)
+    env = {"OMS_TRACE_ALERT_URL": sink_url, "OMS_TRACE_MARKET_HOURS": "", "OMS_TRACE_ALERT_RETRY_DELAY_SEC": "0.01",
+           "OMS_TRACE_ALERT_SYSTEM_WARN_SEC": "100000", "OMS_TRACE_ALERT_SYSTEM_PAGE_SEC": "200000"}
+    alert_settings = alerting.AlertSettings.from_env(env, settings=cfg)
+
+    its = sources.input_tables()
+    for s in config.SYSTEMS:
+        its[s].add(sources.raw_table(rows0[s]))
+    clock_it = input_table(col_defs={"Now": dtypes.Instant})
+    clock_it.add(sources.clock_table(t0))
+    clock = clock_it.last_by()
+    tables = dag.build_lineage({s: its[s] for s in config.SYSTEMS}, cfg, clock=clock)
+    att = events.attach(tables, cfg, alert_settings, clock)
+    history = att.tables["break_history"]
+    alerts = att.tables["alerts"]
+
+    policy = alerting.AlertPolicy(alert_settings)
+    expected_events: Dict[tuple, int] = {}
+    expected_alerts: List[Any] = []
+
+    def expect(prev, cur, now, tick: bool):
+        from collections import Counter
+
+        evs = alerting.gap_transitions(prev.gaps if prev else {}, cur.gaps, now)
+        evs += alerting.link_transitions(prev.unresolved_links if prev else {}, cur.unresolved_links, now)
+        new_alerts = policy.observe(alerting.observe_result(cur, now)) if tick else []
+        evs += [alerting.alert_event(a) for a in new_alerts]
+        for k, n in Counter(alerting.event_key(e) for e in evs).items():
+            expected_events[k] = expected_events.get(k, 0) + n
+        expected_alerts.extend(new_alerts)
+        return evs, new_alerts
+
+    def settled():
+        return (sum(_event_keys(history).values()) == sum(expected_events.values())
+                and len(rows(alerts)) == len(expected_alerts))
+
+    def check(step: str):
+        assert _wait(settled, 20), (step, dict(_event_keys(history)), expected_events, _alert_rows(alerts), _alert_tuples(expected_alerts))
+        assert dict(_event_keys(history)) == expected_events, step
+        assert _alert_rows(alerts) == _alert_tuples(expected_alerts), step
+
+    # step 0: the initial state (replayed listeners) and the first clock tick
+    res0 = reference.reconcile(rows0, cfg, t0)
+    evs, new = expect(None, res0, t0, tick=True)
+    assert {(e["From"], e["To"]) for e in evs if e["Level"] != "ALERT"} == {("NONE", "MISSING_DOWNSTREAM"), ("NONE", "TRANSIENT"), ("NEW", "UNRESOLVED")}
+    assert {(a.metric, a.severity) for a in new} == {("unresolved_link", "WARN"), ("unresolved_links", "WARN"), ("drift_symbols", "WARN")}
+    check("initial")
+    assert att.observe(t0).as_dict() == alerting.observe_result(res0, t0).as_dict()
+
+    # step 1: 40 s later the transient gap has aged into drift
+    t1 = t0 + 40 * SEC
+    clock_it.add(sources.clock_table(t1))
+    res1 = reference.reconcile(rows0, cfg, t1)
+    evs, new = expect(res0, res1, t1, tick=True)
+    assert [(e["Edge"], e["From"], e["To"]) for e in evs] == [("Bc-Cp", "TRANSIENT", "MISSING_DOWNSTREAM")] and new == []
+    check("aged")
+
+    # step 2: the late B child lands (no clock tick): its parent's gap closes, its C parent links
+    its["B"].add(sources.raw_table([late]))
+    rows2 = {s: rows0[s] + ([late] if s == "B" else []) for s in config.SYSTEMS}
+    res2 = reference.reconcile(rows2, cfg, t1)
+    evs, new = expect(res1, res2, t1, tick=False)
+    assert sorted((e["Edge"], e["From"], e["To"]) for e in evs) == [("Bc-Cp", "UNRESOLVED", "LINKED"), ("Bp-Bc", "MISSING_DOWNSTREAM", "NONE")]
+    check("healed")
+
+    # step 3: five minutes later the unresolved alerts clear and the persisting drift quantity alerts
+    t2 = t1 + 300 * SEC
+    clock_it.add(sources.clock_table(t2))
+    res3 = reference.reconcile(rows2, cfg, t2)
+    evs, new = expect(res2, res3, t2, tick=True)
+    assert {(a.metric, a.key, a.severity) for a in new} == {("unresolved_link", f"C:{heal.ids['Cp1']}", "CLEAR"),
+                                                             ("unresolved_links", "C", "CLEAR"),
+                                                             ("drift_qty", "Bc-Cp:MissingDownstreamQty", "WARN"),
+                                                             ("over_routed", trn.root_id, "WARN")}  # Cp2 holds 100 its B child does not
+    check("five minutes later")
+
+    # every alert reached the sink once and the table shows it
+    assert _wait(lambda: all(r["Posted"] == "200" for r in rows(alerts)), 20), _alert_rows(alerts)
+    assert all(r["Attempts"] == 1 and r["PostedTs"] is not None for r in rows(alerts))
+    ids = sorted(d["alert_id"] for d in _SinkHandler.received if d["source"] == "oms-trace")
+    assert ids == sorted(a.id for a in expected_alerts) and len(set(ids)) == len(ids)
+    assert att.counts == {"events": sum(expected_events.values()), "alerts": len(expected_alerts)}
+    assert sum(1 for r in rows(history) if r["Level"] == "ALERT") == len(expected_alerts)
+    assert att.tables["break_events"].is_blink and att.tables["alert_events"].is_blink
+    att.stop()
