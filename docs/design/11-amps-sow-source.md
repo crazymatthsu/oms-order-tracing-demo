@@ -73,11 +73,13 @@ raw-contract column (doc 03 §2), `false` or null on Kafka-fed rows.
 
 Per topic the source knows whether a snapshot is in progress (`group_begin` seen, `group_end`
 not yet) and when the last message arrived. It publishes one row per topic (`amps_topics`:
-`System`, `Topic`, `Epoch`, `SnapshotInProgress`, `Connected`, `LastRecvTs`). The lineage's
-feed health takes that table as an optional override: a topic whose snapshot is replaying is
-`CATCHING_UP` whatever its event-time lag says; silence still makes it `STALE`, and a
-disconnected client makes every one of its topics `STALE` at once. The event-time rule of doc 04
-§5 remains for feeds without a snapshot marker (Kafka).
+`System`, `Topic`, `Epoch`, `SnapshotInProgress`, `Connected`, `LastRecvTs`, `Records`, `Live`,
+`Deleted`, `Rejected`, `LastError`, `StatusTs`; a blink stream behind a `last_by`). The lineage's
+feed health takes that table as an optional override (`build_lineage(..., feed_states=...)`):
+silence still makes a topic `STALE`; then a disconnected client makes every one of its topics
+`STALE` at once; then a replaying snapshot is `CATCHING_UP` whatever its event-time lag says;
+otherwise the event-time rule of doc 04 §5 applies, as it does alone for feeds without a
+snapshot marker (Kafka). `feed_health` gains the two override columns (null on Kafka feeds).
 
 ### 4.3 Ordering (downgrades A15)
 
@@ -86,11 +88,18 @@ during a snapshot or after a reconnect. The DAG never depended on it (a child th
 is `UNRESOLVED` and heals in the cycle its parent lands), so nothing changes in code; A15 becomes
 "not relied upon".
 
+A re-snapshot also stamps a fresh `RecvTs` on every re-sent record: with the default
+`OMS_TRACE_AGE_CLOCK=recv` every open gap reads `TRANSIENT` for `gap_age_sec` after a reconnect
+and then returns to its kind; `event` aging is unaffected. The topics are `CATCHING_UP` for the
+duration of the snapshot either way (§4.2).
+
 ### 4.4 Topics and keys
 
 - One SOW topic per drop-copy channel, as with Kafka (Q6): `OMS_AMPS_TOPICS_<X>` lists them per
-  system. The SOW key is the order id (`send_keys` makes AMPS send it with every message; the
-  body's `OrderId` is the fallback).
+  system (falling back to `OMS_TOPICS_<X>`). Each topic is keyed on the order id
+  (`<Key>/OrderId</Key>`), so a record **is** an order's latest state. `send_keys` makes AMPS
+  send its `SowKey` header with every message; the source uses it to match an `oof` to the
+  record it saw, and the body's `OrderId` is the identity.
 - Body formats: `json` (field names per the raw contract, remappable with `OMS_AMPS_FIELD_MAP`)
   or `fix` (tag=value bodies with a tag map, defaults: 37 → `OrderId`, 55 → `Symbol`, 54 →
   `Side`, 38 → `OrderQty`, 14 → `CumQty`, 151 → `LeavesQty`, 6 → `AvgPx`, 39 → `OrdStatus`,
@@ -108,17 +117,24 @@ book. Doc 08 gains the failure row.
 
 ## 5. The Derived Table Writer path, precisely
 
-- One **Live Query - Merge Server** PQ per system (`oms-ingest-amps-<x>`) runs
-  `amps_sow.start_source` for that system's topics and hands each system's **blink** state
-  table to `DerivedTableWriter.ingestTable(dis, "OMS_RAW", "Orders<X>", partition, table, options)`
-  on the `oms_ingest_<x>` DIS of doc 05 §2 (Groovy names from the DTW page; a Python wrapper, if
-  the release has one, mirrors them — confirm on 2026.01.054).
+- One **Live Query - Merge Server** PQ per system (`oms-ingest-amps-<x>`,
+  `queries/oms_trace/ingest_amps.py`) runs `amps_sow.start_source` for that system's topics
+  (`AmpsSettings.for_system`) and hands the system's **blink** state table to
+  `DerivedTableWriter.ingestTable(dis, namespace, tableName, columnPartition, internalPartition,
+  table, options)` on the `oms_ingest_<x>` DIS of doc 05 §2 (`DataImportServerTools.getDisByNameWithStorage`).
+  The writer takes a blink or add-only table; the column partition is the day's `Date` in
+  `OMS_TRACE_TZ` and the PQ restarts daily like the Kafka ingester (`ingestPartitionedTable`
+  over `partition_by("Date")` is the alternative for a multi-day worker). The parameter order
+  and the `Options` builder (`sequenceColumn`, ...) are read from the Core+ javadoc at design
+  time: **confirm on 2026.01.054**; `oms_trace.enterprise.dtw_options` holds every value.
 - **Replay semantics.** A reconnect re-snapshot would append the whole SOW again. The source
-  therefore exposes two streams: `snapshot` rows and `change` rows (after `group_end`). The
-  ingester persists change rows always and snapshot rows only when `OMS_AMPS_PERSIST_SNAPSHOT`
-  is `true` (the first start of a trading day, when the partition is empty). After a restart
-  within the day, the DIS already holds the states and the SOW re-snapshot only rebuilds the
-  in-worker mirror. A consumer doing `last_by(OrderId)` is indifferent to duplicates either way.
+  therefore tags every row with `SowStream`: `snapshot` (a `sow` record) or `change` (a
+  `publish`, a delete, a reconnect drop). The ingester persists change rows always and snapshot
+  rows only when `OMS_AMPS_PERSIST_SNAPSHOT` is `true` (the first start of a trading day, when
+  the partition is empty). After a restart within the day, the DIS already holds the states and
+  the SOW re-snapshot only rebuilds the in-worker mirror. Without a per-partition monotonic
+  sequence column the writer cannot promise exactly-once across a restart; a consumer doing
+  `last_by(OrderId)` is indifferent to duplicates either way.
 - The lineage PQ is **unchanged**: `OMS_TRACE_SOURCE=enterprise`, `db.live_table` over
   `OMS_RAW.Orders<X>`, the same Date window.
 
@@ -134,10 +150,14 @@ book. Doc 08 gains the failure row.
 
 ## 7. Verification
 
-- Pure python: the SOW fold (`amps_sow.SowMirror`) on real `AMPS.Message` objects fed through a
-  stub client — snapshot, publish, `oof`, a reconnect snapshot dropping what was not re-sent,
-  the `SowDeleted` policy, both body formats, the field and tag maps.
-- Embedded engine: the source's blink tables feed `dag.build_lineage` and the lineage equals the
-  oracle on the same events; a late B child published to the SOW heals its C parent.
+- Pure python (`tests/test_amps_sow.py`): the SOW fold (`amps_sow.TopicMirror`) on message
+  doubles and on real `AMPS.Message` objects — snapshot, publish, `delta_publish`, `oof`,
+  `sow_delete`, a reconnect snapshot dropping what was not re-sent, the `SowDeleted` policy,
+  rejects, both body formats, the field and tag maps, the settings, the stub-client wiring.
+- Embedded engine (`tests/test_dag_embedded.py`): the source's blink tables feed
+  `dag.build_lineage` and the lineage equals the oracle on the scenario book delivered as SOW
+  messages; a late B child published to the SOW heals its C parent; a disconnect turns the
+  system's topics `STALE` and the re-snapshot `CATCHING_UP`, then `CURRENT`; an `oof` leaves a
+  `SowDeleted` state behind.
 - Real broker (when available, as the fix42 e2e does): the compose overlay with an AMPS image
   from `repos.env`, the three SOW topics, publish / delete / disconnect / restart steps.
