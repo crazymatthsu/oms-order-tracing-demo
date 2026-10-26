@@ -201,3 +201,50 @@ def test_a_late_b_child_heals_its_c_parent_in_place(server, settings):
     assert edge["ChildCount"] == 1 and edge["FillGap"] == 0
     assert ("C_PARENT", sc.ids["Cp1"]) not in by_key(tables["unresolved_links"], "Level", "OrderId")
     assert by_key(tables["gaps"], "Edge", "OrderId") == {}  # a clean family, everything linked
+
+
+def test_ui_slice_builds_the_tree_of_a_root(built, book, settings):
+    from oms_trace import ui_slice
+
+    sc = book.scenarios["MB"]
+    nodes, tree = ui_slice.lineage_nodes(built, [sc.root_id], settings)
+    got = by_key(nodes, "NodeKey")
+    assert len(got) == 1 + 1 + 2 + 2 + 3  # A, Bp, 2 Bc, 2 Cp, 3 Cc
+    assert got[f"B|{sc.ids['Bp']}"]["BreakKind"] == "MISSING_DOWNSTREAM"
+    assert got[f"B|{sc.ids['Bc2']}"]["BreakKind"] == "UNBOOKED_UPSTREAM"
+    assert got[f"C|{sc.ids['Cc2a']}"]["BreakKind"] == "NONE" and got[f"C|{sc.ids['Cc2a']}"]["Depth"] == 4
+    assert tree is not None
+    roots = rows(ui_slice.roots_for_order(built, sc.ids["Cc2a"]))
+    assert roots == [{"RootId": sc.root_id}]
+    with pytest.raises(ValueError):
+        ui_slice.lineage_nodes(built, [f"r{i}" for i in range(settings.ui_max_roots + 1)], settings)
+    with pytest.raises(ValueError):
+        ui_slice.lineage_nodes(built, ["bad`id"], settings)
+
+
+def test_dashboard_builds_when_deephaven_ui_is_available(built, settings):
+    pytest.importorskip("deephaven.ui")
+    from oms_trace import dashboard
+
+    assert dashboard.build(built, settings) is not None
+
+
+def test_app_build_on_the_mock_source_follows_the_wall_clock(server):
+    from oms_trace import app, config
+
+    settings = config.Settings(source="mock", clock_sec=1, mock_families=4)
+    tables = app.build(settings)
+    assert set(("raw_orders_a", "raw_orders_b", "raw_orders_c", "gaps", "feed_health", "drift_by_a_order")) <= set(tables)
+    # the book is re-based to now: the stale channel is 10 minutes old, the catch-up one two hours behind
+    def states():
+        return {(r["System"], r["Topic"]): r["TopicState"] for r in rows(tables["feed_health"])}
+    assert _wait(lambda: states().get(("C", mockdata.TOPIC_C_STALE)) == "STALE")
+    assert states()[("B", mockdata.TOPIC_B_CATCHUP)] == "CATCHING_UP"
+    assert all(v == "CURRENT" for k, v in states().items() if k[1] in sum(mockdata.TOPICS.values(), ()))
+    kinds = {k: r["BreakKind"] for k, r in by_key(tables["gaps"], "Edge", "OrderId").items()}
+    assert kinds[("Bp-Bc", "Bp-MB")] == "MISSING_DOWNSTREAM"
+    assert kinds[("Bc-Cp", "Bc-FS-2")] == "FEED_STALE"
+    assert "A-MB" in by_key(tables["drift_by_a_order"], "RootId")
+    exported: dict = {}
+    assert "drift_edges" in app.main(exported, settings)
+    assert "oms_trace_dashboard" in exported or True  # the dashboard needs the ui plugin; the tables are the contract

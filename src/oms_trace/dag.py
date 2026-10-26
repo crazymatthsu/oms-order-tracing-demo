@@ -61,8 +61,19 @@ _STATE_COLS = [
 
 
 def live_clock(settings: Settings) -> Table:
-    """The production clock: one row, re-ticking every ``clock_sec`` seconds."""
-    return time_table(f"PT{settings.clock_sec}S").view(["Now = Timestamp"]).last_by()
+    """The production clock: one row, re-ticking every ``clock_sec`` seconds.
+
+    A static first row makes ``Now`` available immediately; ``time_table`` emits its first row
+    only after one period, and a null ``Now`` would read every gap as TRANSIENT until then.
+    """
+    import time
+
+    from deephaven.column import datetime_col
+    from deephaven.time import to_j_instant
+
+    first = new_table([datetime_col("Now", [to_j_instant(time.time_ns())])])
+    ticking = time_table(f"PT{settings.clock_sec}S").view(["Now = Timestamp"])
+    return merge([first, ticking]).last_by()
 
 
 def _dates_filter(settings: Settings) -> str:

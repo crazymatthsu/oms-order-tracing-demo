@@ -1,0 +1,23 @@
+<!-- OMS_RAW.OrdersB: raw order states of system B (docs/design/03 section 2). Deploy with
+     dhconfig schema import. Attribute names: confirm against the installed release's schema
+     reference; the column set is the contract. -->
+<Table namespace="OMS_RAW" name="OrdersB" storageType="NestedPartitionedOnDisk" defaultMergeFormat="DeephavenV1">
+  <Partitions keyFormula="${autobalance_single}"/>
+  <Column name="Date"           dataType="String"  columnType="Partitioning"/>
+  <Column name="OrderId"        dataType="String"  columnType="Grouping"/>
+  <Column name="UpstreamRef"    dataType="String"/>
+  <Column name="ParentOrderId"  dataType="String"/>
+  <Column name="Symbol"         dataType="String"/>
+  <Column name="Side"           dataType="String"/>
+  <Column name="OrderQty"       dataType="long"/>
+  <Column name="CumQty"         dataType="long"/>
+  <Column name="LeavesQty"      dataType="long"/>
+  <Column name="AvgPx"          dataType="double"/>
+  <Column name="OrdStatus"      dataType="String"/>
+  <Column name="EventTs"        dataType="java.time.Instant"/>
+  <Column name="RecvTs"         dataType="java.time.Instant"/>
+  <Column name="SeqNo"          dataType="long"/>
+  <Column name="Topic"          dataType="String"/>
+  <Column name="KafkaPartition" dataType="int"/>
+  <Column name="KafkaOffset"    dataType="long"/>
+</Table>
