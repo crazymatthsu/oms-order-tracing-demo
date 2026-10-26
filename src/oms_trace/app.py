@@ -14,12 +14,11 @@ aging and feed-health logic runs live), ``files`` (JSON lines per system under
 
 from __future__ import annotations
 
-import json
 import os
 import time
-from typing import Any, Dict, List, MutableMapping
+from typing import Any, Dict, MutableMapping
 
-from oms_trace import config, dag, mockdata, sources
+from oms_trace import config, files, mockdata
 
 EXPORTED_RAW = {"A": "raw_orders_a", "B": "raw_orders_b", "C": "raw_orders_c"}
 
@@ -41,35 +40,10 @@ def _rebase(book: mockdata.Book, now_nanos: int) -> mockdata.Book:
     return book
 
 
-def _files_rows(directory: str) -> Dict[str, List[Dict[str, Any]]]:
-    """``orders_a.jsonl`` etc.: one raw row per line, timestamps as epoch nanos or ISO-8601."""
-    from datetime import datetime
-
-    def ts(value):
-        if value is None or isinstance(value, int):
-            return value
-        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1e9)
-
-    out: Dict[str, List[Dict[str, Any]]] = {}
-    for system in config.SYSTEMS:
-        path = os.path.join(directory, f"orders_{system.lower()}.jsonl")
-        rows: List[Dict[str, Any]] = []
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    row = json.loads(line)
-                    for col in ("RecvTs", "EventTs"):
-                        row[col] = ts(row.get(col))
-                    rows.append({name: row.get(name) for name in config.RAW_COLUMN_NAMES})
-        out[system] = rows
-    return out
-
-
 def build(settings: config.Settings) -> Dict[str, Any]:
     """Raw tables for the configured source, then the DAG; returns every exported table."""
+    from oms_trace import dag, sources  # engine modules: imported only inside a running server
+
     exported: Dict[str, Any] = {}
     if settings.source == "mock":
         book = mockdata.generate(seed=settings.mock_seed, families=settings.mock_families)
@@ -77,7 +51,8 @@ def build(settings: config.Settings) -> Dict[str, Any]:
         raw = sources.mock_tables(book)
         settings = settings.with_(as_of=None)  # the window follows the wall clock
     elif settings.source == "files":
-        raw = {s: sources.raw_table(rows) for s, rows in _files_rows(os.environ.get("OMS_TRACE_FILES_DIR", "/oms-files")).items()}
+        directory = os.environ.get("OMS_TRACE_FILES_DIR", "/oms-files")
+        raw = {s: sources.raw_table(rows) for s, rows in files.rows_from_dir(directory).items()}
     elif settings.source == "enterprise":
         from oms_trace import enterprise
 

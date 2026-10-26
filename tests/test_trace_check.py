@@ -2,7 +2,7 @@ import json
 import os
 
 from oms_trace import config, mockdata, trace_check
-from oms_trace.app import _files_rows
+from oms_trace.files import rows_from_dir
 
 
 def test_analyze_flags_the_deliberate_violations(book):
@@ -29,7 +29,7 @@ def test_clean_book_has_no_violations():
 
 def test_export_and_reload_round_trip(tmp_path, book):
     trace_check.export_mock(str(tmp_path), seed=42, families=24)
-    reloaded = _files_rows(str(tmp_path))
+    reloaded = rows_from_dir(str(tmp_path))
     for system in config.SYSTEMS:
         assert len(reloaded[system]) == len(book.rows[system])
         assert reloaded[system][0]["RecvTs"] == book.rows[system][0]["RecvTs"]

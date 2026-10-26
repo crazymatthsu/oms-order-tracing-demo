@@ -149,20 +149,15 @@ def render(report: Dict[str, Any]) -> str:
 
 
 def load_dir(directory: str) -> Dict[str, List[Row]]:
-    from oms_trace.app import _files_rows
+    from oms_trace import files
 
-    return _files_rows(directory)
+    return files.rows_from_dir(directory)
 
 
 def export_mock(directory: str, seed: int = 42, families: int = 24) -> None:
-    from oms_trace import mockdata
+    from oms_trace import files, mockdata
 
-    os.makedirs(directory, exist_ok=True)
-    book = mockdata.generate(seed=seed, families=families)
-    for system in config.SYSTEMS:
-        with open(os.path.join(directory, f"orders_{system.lower()}.jsonl"), "w", encoding="utf-8") as fh:
-            for r in book.rows[system]:
-                fh.write(json.dumps(r) + "\n")
+    files.write_dir(directory, mockdata.generate(seed=seed, families=families).rows)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
