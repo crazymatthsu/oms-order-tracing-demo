@@ -623,6 +623,13 @@ for equality step by step. One engine detail: a listener receives String columns
 `str_` arrays, which spell a null as the text `None`; `RootId` is the only nullable String read
 and is mapped back.
 
+**Blink tables (M2 / M3).** An aggregation over a blink table (`last_by`, `agg_by`, `ring_table`)
+accumulates the rows published **after** it was created; rows of earlier cycles are gone. Every
+consumer of a blink source therefore builds its aggregation before the first message flows:
+`build_lineage` does (its `last_by` is created over the empty source tables), and so must any
+console or test that wants the full state. A `last_by` created later shows the current cycle only,
+which is what made one engine test flaky before it created its state views up front.
+
 ## 11. Checks the implementation must pass (doc 09 details them)
 
 1. AC1–AC4 against the Python reference oracle, row for row, on the scenario catalog.

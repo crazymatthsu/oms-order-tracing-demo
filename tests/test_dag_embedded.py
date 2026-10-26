@@ -293,7 +293,10 @@ def amps_feed(server, book, settings):
     source.start(background=False)  # builds the blink tables and subscribes through the stub
     tables = dag.build_lineage(source.raw_tables(), settings, clock=sources.clock_table(book.now),
                                feed_states=source.topics_table())
-    feed = {"source": source, "tables": tables, "client": clients[0], "handlers": clients[0].handlers,
+    # A blink aggregation sees the rows published after it was created, not before (docs/design/04 §10b):
+    # the per-system state views must exist before the first message flows, as the DAG's own last_by does.
+    states = {s: source.raw_tables()[s].last_by(["OrderId"]) for s in config.SYSTEMS}
+    feed = {"source": source, "tables": tables, "states": states, "client": clients[0], "handlers": clients[0].handlers,
             "clock": clock, "now": book.now, "Message": FakeMessage}
     for handler in feed["handlers"].values():  # an empty SOW first: snapshot boundaries on every topic
         handler(FakeMessage("group_begin"))
@@ -337,7 +340,7 @@ def test_amps_fed_lineage_equals_the_oracle(amps_feed, oracle):
     # the exported raw tables are blink: a cycle's rows, while the aggregates see the whole history
     raw_c = amps_feed["source"].raw_tables()["C"]
     assert raw_c.is_blink
-    states_c = rows(raw_c.last_by(["OrderId"]))
+    states_c = rows(amps_feed["states"]["C"])  # created before the rows flowed; a last_by made now would see only this cycle
     assert len(states_c) == len(oracle.nodes["C_PARENT"]) + len(oracle.nodes["C_CHILD"])
     assert {r["SowStream"] for r in states_c} == {"change"} and {r["SowEpoch"] for r in states_c} == {1}
     assert all(m.counts["rejected"] == 0 for m in amps_feed["source"].mirrors.values())
@@ -369,7 +372,7 @@ def test_amps_publish_heals_a_c_parent_and_an_oof_leaves_a_deleted_state(amps_fe
     # Cc1a leaves the SOW (an oof with the SowKey only): its last state stays, flagged, and still explains its parent
     cc = [r for r in fam.rows["C"] if r["OrderId"] == sc.ids["Cc1a"]][0]
     handlers[cc["Topic"]](Message("oof", sow_key=f"C:{cc['OrderId']}"))
-    states = amps_feed["source"].raw_tables()["C"].last_by(["OrderId"])
+    states = amps_feed["states"]["C"]
     assert _wait(lambda: by_key(states, "OrderId").get(cc["OrderId"], {}).get("SowDeleted") is True)
     gone = by_key(states, "OrderId")[cc["OrderId"]]
     assert gone["CumQty"] == cc["CumQty"] and gone["SowStream"] == "change" and gone["RecvTs"] == amps_feed["now"]
