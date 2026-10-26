@@ -1,0 +1,46 @@
+# OMS order tracing -- the Community demo: one Deephaven server (Community Core 42.5, the engine
+# Enterprise 1.202601 bundles) running the lineage DAG over the scenario book.
+#
+#   bash scripts/run_demo.sh up        # then open http://localhost:10000/ide  (Panels: drift_edges, ...)
+#   bash scripts/run_demo.sh down
+#
+# Every image comes from repos.env (override for a JFrog-proxied company). No broker: the book is
+# static and re-based to the wall clock at start-up; the DAG is incremental, so the same code runs
+# unchanged over ticking tables (see the embedded live test and OMS_TRACE_SOURCE=enterprise).
+name: oms-order-tracing
+
+services:
+  deephaven:
+    image: ${DEEPHAVEN_IMAGE:-ghcr.io/deephaven/server:42.5}  # repos.env
+    container_name: "${DH_CONTAINER:-oms-trace-deephaven}"
+    hostname: deephaven
+    ports:
+      - "${DH_PORT:-10000}:10000"
+    volumes:
+      - ../src:/oms-scripts:ro,z
+      - ./apps/oms-trace:/app.d:ro,z
+      - ${OMS_TRACE_FILES_HOST_DIR:-./files}:/oms-files:ro,z
+    environment:
+      PYTHONPATH: "/oms-scripts"
+      START_OPTS: >-
+        -Xmx${DH_XMX:-4g}
+        -Ddeephaven.console.type=python
+        -Ddeephaven.application.dir=/app.d
+        -DAuthHandlers=io.deephaven.auth.AnonymousAuthenticationHandler
+      OMS_TRACE_SOURCE: "${OMS_TRACE_SOURCE:-mock}"            # mock | files
+      OMS_TRACE_FILES_DIR: /oms-files
+      OMS_TRACE_MOCK_SEED: "${OMS_TRACE_MOCK_SEED:-42}"
+      OMS_TRACE_MOCK_FAMILIES: "${OMS_TRACE_MOCK_FAMILIES:-24}"
+      OMS_TRACE_GAP_AGE_SEC: "${OMS_TRACE_GAP_AGE_SEC:-30}"
+      OMS_TRACE_UNRESOLVED_ALERT_SEC: "${OMS_TRACE_UNRESOLVED_ALERT_SEC:-3600}"
+      OMS_TRACE_CLOCK_SEC: "${OMS_TRACE_CLOCK_SEC:-5}"
+      OMS_TRACE_FEED_STALE_SEC: "${OMS_TRACE_FEED_STALE_SEC:-120}"
+      OMS_TRACE_FEED_CATCHUP_SEC: "${OMS_TRACE_FEED_CATCHUP_SEC:-300}"
+      OMS_TRACE_AGE_CLOCK: "${OMS_TRACE_AGE_CLOCK:-recv}"
+      OMS_TRACE_UI_MAX_ROOTS: "${OMS_TRACE_UI_MAX_ROOTS:-20}"
+    healthcheck:
+      test: ["CMD", "/opt/grpc_health_probe/grpc_health_probe", "-addr=localhost:10000"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
