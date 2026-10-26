@@ -75,21 +75,25 @@ def build(tables: Mapping[str, Any], settings: config.Settings):
             ),
             title="Selection",
         )
-        return ui.dashboard(
-            ui.column(
-                controls,
-                ui.row(
-                    ui.panel(ui.table(tables["drift_by_a_order"], on_row_press=on_root_press), title="Drift by root A order"),
-                    ui.panel(ui.table(edges, on_row_press=on_edge_press), title="Drift edges (aged, feed current)"),
+        rows = [
+            controls,
+            ui.row(
+                ui.panel(ui.table(tables["drift_by_a_order"], on_row_press=on_root_press), title="Drift by root A order"),
+                ui.panel(ui.table(edges, on_row_press=on_edge_press), title="Drift edges (aged, feed current)"),
+            ),
+            ui.row(
+                tree_panel,
+                ui.column(
+                    ui.panel(ui.table(tables["feed_health"]), title="Feed health per channel"),
+                    ui.panel(ui.table(tables["unresolved_links"]), title="Unresolved links"),
                 ),
-                ui.row(
-                    tree_panel,
-                    ui.column(
-                        ui.panel(ui.table(tables["feed_health"]), title="Feed health per channel"),
-                        ui.panel(ui.table(tables["unresolved_links"]), title="Unresolved links"),
-                    ),
-                ),
-            )
-        )
+            ),
+        ]
+        if "alerts" in tables and "break_history" in tables:
+            rows.append(ui.row(
+                ui.panel(ui.table(tables["alerts"].reverse()), title="Alerts (newest first; Posted = sink result)"),
+                ui.panel(ui.table(tables["break_history"].reverse()), title="Break events (newest first)"),
+            ))
+        return ui.dashboard(ui.column(*rows))
 
     return oms_trace_app()

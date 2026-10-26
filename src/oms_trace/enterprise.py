@@ -95,3 +95,27 @@ def dtw_options(settings: config.Settings, system: str, column_partition: Option
         # so duplicates after a restart are possible and harmless under last_by(OrderId)
         "sequence_column": sequence_column,
     }
+
+
+def drift_writer_options(settings: config.Settings, column_partition: Optional[str] = None,
+                         internal_partition: str = "lineage", source_pq: str = "oms-lineage") -> Dict[str, Any]:
+    """The Derived Table Writer call of ``oms-drift-writer`` (docs/design/05 section 8.1, 03 section 5.1).
+
+    ``break_events`` of the lineage PQ, reached with the Core+ client inside the worker (doc 07
+    section 4), appended to ``OMS_TRACE.DriftEvents`` on the ``oms_trace`` DIS (routing/dis.sh). The
+    column partition is today's Date in ``settings.tz``; the PQ restarts daily (doc 07 section 2).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    name = "oms_trace"
+    return {
+        "dis_name": name,
+        "storage": f"{os.environ.get('DIS_STORAGE_ROOT', '/db/dataImportServers')}/{name}",
+        "namespace": settings.out_namespace,
+        "table_name": "DriftEvents",
+        "column_partition": column_partition or datetime.now(ZoneInfo(settings.tz)).date().isoformat(),
+        "internal_partition": internal_partition,
+        "source_pq": os.environ.get("OMS_LINEAGE_PQ", source_pq),
+        "source_table": "break_events",
+    }

@@ -67,6 +67,21 @@ retried once; the table is the record either way. Defaults; tune after the first
 
 A transient gap (`TRANSIENT`) never alerts; that is the point of the aging threshold (R6).
 
+**As built (M3, `oms_trace.alerting`).** The first seven rows are the rules `unresolved_link`
+(per node) and `unresolved_links` (per system, with the page level and the 15-minute summary),
+`c_parents_vs_b_children`, `channel_health` (one alert per topic per state change, the suppressed
+gap count in the message), `over_routed` (per root), `drift_qty` (per edge and direction,
+re-alert when the quantity doubles), `drift_symbols` / `drift_symbol_count`, and `stale_system`
+(every channel of a system silent). A rule with a persistence window ("for > N min") tracks when
+its condition first held; a condition that ends emits a `CLEAR` row. The channel and system
+staleness rules apply in `OMS_TRACE_MARKET_HOURS` only. The page thresholds "agreed with the
+desks" default to off (`OMS_TRACE_ALERT_DRIFT_PAGE_QTY`, `_OVER_ROUTED_PAGE_QTY` = 0). The
+remaining rows are the platform's: ingest lag, reject rate, update-graph cycle, heap and PQ
+state come from the Enterprise monitoring (§4), the nightly merge from the controller; the
+execution residue row waits for P2b. The sink POSTs one JSON document per row (`source`,
+`alert_id`, `ts`, `metric`, `key`, `value`, `threshold`, `severity`, `message`) and the `alerts`
+table records the outcome (`Posted`, `Attempts`).
+
 ## 3. Runbooks
 
 **R1 — Replay a system's day from Kafka.** Use when a partition is corrupt, a value spec was

@@ -12,6 +12,10 @@ aging and feed-health logic runs live), ``files`` (JSON lines per system under
 ``OMS_TRACE_FILES_DIR``), ``enterprise`` (``db.live_table`` over the DIS tables), ``amps`` (the
 in-worker SOW mirror of :mod:`oms_trace.amps_sow`, docs/design/11; its ``amps_topics`` status
 table is exported and overrides feed health).
+
+Whatever the source, :mod:`oms_trace.events` attaches the break-event listeners and the alert
+policy (docs/design/04 §7, 08 §2): ``break_events`` / ``break_history`` and ``alert_events`` /
+``alerts`` are exported too, and ``OMS_TRACE_ALERT_URL`` turns on the one HTTP sink (Q9).
 """
 
 from __future__ import annotations
@@ -71,7 +75,12 @@ def build(settings: config.Settings) -> Dict[str, Any]:
         raise config.SettingsError(f"unknown OMS_TRACE_SOURCE {settings.source!r}")
     for system, table in raw.items():
         exported[EXPORTED_RAW[system]] = table
-    exported.update(dag.build_lineage(raw, settings, feed_states=feed_states))
+    clock = dag.live_clock(settings)
+    exported.update(dag.build_lineage(raw, settings, clock=clock, feed_states=feed_states))
+    # break_events / break_history / alert_events / alerts, and the HTTP sink when OMS_TRACE_ALERT_URL is set
+    from oms_trace import events
+
+    exported.update(events.attach(exported, settings, clock=clock).tables)
     return exported
 
 

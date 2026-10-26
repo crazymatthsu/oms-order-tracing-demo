@@ -1,0 +1,21 @@
+<!-- OMS_TRACE.DriftEvents: the break and alert history (docs/design/03 section 5.1), appended by
+     oms-drift-writer from the lineage PQ's break_events blink table through the Derived Table Writer.
+     One row per node whose BreakKind or ParentState changed (From / To are the kinds or states
+     before and after; NONE for a gap appearing or closing, NEW for a node arriving unlinked,
+     LINKED for a parent landing) and one row per alert (Level ALERT: Edge is the metric, OrderId
+     the key, From / To the severities, FillGap the value, GapAgeSec the threshold). Deploy with
+     dhconfig schema import; confirm attribute names against the installed release's schema reference. -->
+<Table namespace="OMS_TRACE" name="DriftEvents" storageType="NestedPartitionedOnDisk" defaultMergeFormat="DeephavenV1">
+  <Partitions keyFormula="${autobalance_single}"/>
+  <Column name="Date"      dataType="String"  columnType="Partitioning"/>
+  <Column name="Ts"        dataType="java.time.Instant"/>
+  <Column name="Level"     dataType="String"/>
+  <Column name="System"    dataType="String"/>
+  <Column name="OrderId"   dataType="String"  columnType="Grouping"/>
+  <Column name="RootId"    dataType="String"/>
+  <Column name="Edge"      dataType="String"/>
+  <Column name="From"      dataType="String"/>
+  <Column name="To"        dataType="String"/>
+  <Column name="FillGap"   dataType="long"/>
+  <Column name="GapAgeSec" dataType="long"/>
+</Table>
