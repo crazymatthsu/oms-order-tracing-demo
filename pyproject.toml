@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oms-order-tracing"
+version = "0.1.0"
+description = "Cross-system order tracing on Deephaven: link A (Raptor) -> B (algo) -> C (order router) order states, reconcile executed and open quantity per edge, name the system and book that is short"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "oms-order-tracing-demo" }]
+# No runtime dependency: the reference oracle, the mock book and the pre-cutover check are pure
+# python; the Deephaven layer runs inside a server where `deephaven` (and `deephaven.ui`) are
+# bundled. Enterprise-only imports live in oms_trace.enterprise and are resolved in the worker.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+# The embedded-engine tests (OMS_TRACE_DH_TEST=1): Community Core 42.5, the engine Enterprise
+# 1.202601 bundles (docs/design/01 Q10). ~600 MB with its JVM jars; needs a JDK 17+.
+engine = ["deephaven-server==42.5", "deephaven-plugin-ui"]
+
+[project.scripts]
+oms-trace-check = "oms_trace.trace_check:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

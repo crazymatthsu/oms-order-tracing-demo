@@ -1,0 +1,20 @@
+# Line endings -- Windows / Git Bash support (claude-code/docs/15 section 10).
+#
+# Git for Windows defaults to core.autocrlf=true, which checks text files out with CRLF.
+# bash then fails on every script ("$'\r': command not found", "set: pipefail\r: invalid
+# option"), and Dockerfiles / gradlew / files mounted into Linux containers misbehave too.
+# These attributes override core.autocrlf: every text file is checked out with LF on every
+# platform. The index already stores LF, so nothing needs renormalizing.
+* text=auto eol=lf
+
+# Windows batch files keep the CRLF they are stored with.
+*.bat -text
+*.cmd -text
+
+# Binaries: never convert.
+*.jar binary
+*.zip binary
+*.gz binary
+*.png binary
+*.jpg binary
+*.parquet binary
