@@ -9,7 +9,9 @@ Used two ways:
 
 Sources (``OMS_TRACE_SOURCE``): ``mock`` (the scenario book, re-based to the wall clock so the
 aging and feed-health logic runs live), ``files`` (JSON lines per system under
-``OMS_TRACE_FILES_DIR``), ``enterprise`` (``db.live_table`` over the DIS tables).
+``OMS_TRACE_FILES_DIR``), ``enterprise`` (``db.live_table`` over the DIS tables), ``amps`` (the
+in-worker SOW mirror of :mod:`oms_trace.amps_sow`, docs/design/11; its ``amps_topics`` status
+table is exported and overrides feed health).
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ def build(settings: config.Settings) -> Dict[str, Any]:
     from oms_trace import dag, sources  # engine modules: imported only inside a running server
 
     exported: Dict[str, Any] = {}
+    feed_states = None
     if settings.source == "mock":
         book = mockdata.generate(seed=settings.mock_seed, families=settings.mock_families)
         _rebase(book, time.time_ns())
@@ -57,11 +60,18 @@ def build(settings: config.Settings) -> Dict[str, Any]:
         from oms_trace import enterprise
 
         raw = enterprise.raw_tables(settings)
+    elif settings.source == "amps":
+        from oms_trace import amps_sow
+
+        source = amps_sow.start_source(settings)  # connects in the background; the tables fill when it does
+        raw = source.raw_tables()
+        feed_states = source.topics_table()
+        exported["amps_topics"] = feed_states
     else:  # pragma: no cover - load_settings validates the choice
         raise config.SettingsError(f"unknown OMS_TRACE_SOURCE {settings.source!r}")
     for system, table in raw.items():
         exported[EXPORTED_RAW[system]] = table
-    exported.update(dag.build_lineage(raw, settings))
+    exported.update(dag.build_lineage(raw, settings, feed_states=feed_states))
     return exported
 
 

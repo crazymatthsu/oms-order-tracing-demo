@@ -144,20 +144,38 @@ def _edge(parents: Table, children: Table, edge: config.Edge, settings: Settings
     )
 
 
-def _topic_health(raw_window: Table, system: str, clock: Table, settings: Settings) -> Table:
-    return (
+FEED_HEALTH_COLUMNS = ["System", "Topic", "LastRecvTs", "LastEventTs", "SilentSec", "BehindSec", "Connected",
+                       "SnapshotInProgress", "TopicState", "StaleInt"]
+
+
+def _topic_health(raw_window: Table, system: str, clock: Table, settings: Settings,
+                  feed_states: Optional[Table] = None) -> Table:
+    """Per channel: silence, event-time lag and, with ``feed_states``, the source's own word (docs/design/11 §4.2).
+
+    ``feed_states`` has one row per (System, Topic) with ``Connected`` and ``SnapshotInProgress``
+    (the AMPS source's ``amps_topics``). Silence still wins; a disconnected client makes the
+    topic STALE, a replaying snapshot CATCHING_UP; otherwise the event-time rule of doc 04 §5.
+    """
+    health = (
         raw_window.agg_by([agg.max_(["LastRecvTs = RecvTs", "LastEventTs = EventTs"])], by=["Topic"])
+        .update_view([f"System = `{system}`", "Topic = isNull(Topic) ? `` : Topic"])
         .natural_join(clock, on=[], joins=["Now"])
-        .update_view([
-            f"System = `{system}`",
-            "Topic = isNull(Topic) ? `` : Topic",
+    )
+    if feed_states is None:
+        health = health.update_view(["Connected = (Boolean) null", "SnapshotInProgress = (Boolean) null"])
+    else:
+        health = health.natural_join(feed_states, on=["System", "Topic"], joins=["Connected", "SnapshotInProgress"])
+    return (
+        health.update_view([
             "SilentSec = (long) (diffNanos(LastRecvTs, Now) / SECOND)",   # `/` on longs is a double in the query language
             "BehindSec = isNull(LastEventTs) ? NULL_LONG : (long) (diffNanos(LastEventTs, Now) / SECOND)",
             f"TopicState = SilentSec > {settings.feed_stale_sec} ? `STALE`"
+            " : (!isNull(Connected) && !Connected) ? `STALE`"
+            " : (!isNull(SnapshotInProgress) && SnapshotInProgress) ? `CATCHING_UP`"
             f" : ((!isNull(BehindSec) && BehindSec > {settings.feed_catchup_sec}) ? `CATCHING_UP` : `CURRENT`)",
             "StaleInt = TopicState == `CURRENT` ? 0 : 1",
         ])
-        .view(["System", "Topic", "LastRecvTs", "LastEventTs", "SilentSec", "BehindSec", "TopicState", "StaleInt"])
+        .view(FEED_HEALTH_COLUMNS)
     )
 
 
@@ -177,13 +195,17 @@ def _sum(table: Table, expr: str, metric: str, key: str) -> Table:
             .update_view(["Value = isNull(S) ? 0L : S"]).view(["Metric", "Key", "Value"]))
 
 
-def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[Table] = None) -> Dict[str, Table]:
+def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[Table] = None,
+                  feed_states: Optional[Table] = None) -> Dict[str, Table]:
     """Build every table of docs/design/03 section 4 from one raw table per system.
 
     Args:
-        raw: ``{"A": table, "B": table, "C": table}`` with the raw contract's columns.
+        raw: ``{"A": table, "B": table, "C": table}`` with the raw contract's columns (append-only
+            or blink: every aggregation here sees a blink table's whole history).
         settings: the knobs (window, thresholds, clock choice).
         clock: a one-row table with an ``Now`` Instant; ``None`` means :func:`live_clock`.
+        feed_states: optional, one row per (System, Topic) with ``Connected`` and
+            ``SnapshotInProgress`` (the AMPS source's ``amps_topics``) overriding feed health.
     """
     clock = live_clock(settings) if clock is None else clock
     window = {s: raw[s].where(_dates_filter(settings)) for s in config.SYSTEMS}
@@ -213,7 +235,7 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
     edges = {e.name: _edge(parents_of[e.parent_level], children_of[e.child_level], e, settings) for e in EDGES}
 
     # feed health per channel (Q7): a system is down only when every channel is non-current
-    feed_health = merge([_topic_health(window[s], s, clock, settings) for s in config.SYSTEMS])
+    feed_health = merge([_topic_health(window[s], s, clock, settings, feed_states) for s in config.SYSTEMS])
     system_health = feed_health.agg_by([agg.min_(["SystemStaleInt = StaleInt"])], by=["System"])
 
     candidates = merge(list(edges.values())).where("FillGap != 0 || RouteGap != 0 || (ExpectOne && ChildCount != 1)")

@@ -153,8 +153,15 @@ def _edge(parents: Mapping[str, Row], children: Mapping[str, Row], edge: config.
     return out
 
 
-def feed_health(rows_by_system: Mapping[str, Iterable[Row]], dates: Set[str], settings: config.Settings, now: int) -> Dict[Tuple[str, str], Row]:
+FeedStates = Mapping[Tuple[str, str], Mapping[str, Any]]
+
+
+def feed_health(rows_by_system: Mapping[str, Iterable[Row]], dates: Set[str], settings: config.Settings, now: int,
+                feed_states: Optional[FeedStates] = None) -> Dict[Tuple[str, str], Row]:
+    """Per channel; ``feed_states`` ((System, Topic) -> Connected / SnapshotInProgress) is the
+    AMPS source's override of docs/design/11 section 4.2."""
     out: Dict[Tuple[str, str], Row] = {}
+    feed_states = feed_states or {}
     for system in config.SYSTEMS:
         last_recv: Dict[str, int] = {}
         last_event: Dict[str, Optional[int]] = {}
@@ -171,15 +178,22 @@ def feed_health(rows_by_system: Mapping[str, Iterable[Row]], dates: Set[str], se
         for topic, recv in last_recv.items():
             silent = sec(now - recv)
             behind = sec(now - last_event[topic]) if last_event.get(topic) is not None else None
+            fs = feed_states.get((system, topic), {})
+            connected, snapshot = fs.get("Connected"), fs.get("SnapshotInProgress")
             if silent > settings.feed_stale_sec:
                 state = "STALE"
+            elif connected is False:
+                state = "STALE"
+            elif snapshot is True:
+                state = "CATCHING_UP"
             elif behind is not None and behind > settings.feed_catchup_sec:
                 state = "CATCHING_UP"
             else:
                 state = "CURRENT"
             out[(system, topic)] = {
                 "System": system, "Topic": topic, "LastRecvTs": recv, "LastEventTs": last_event.get(topic),
-                "SilentSec": silent, "BehindSec": behind, "TopicState": state, "StaleInt": 0 if state == "CURRENT" else 1,
+                "SilentSec": silent, "BehindSec": behind, "Connected": connected, "SnapshotInProgress": snapshot,
+                "TopicState": state, "StaleInt": 0 if state == "CURRENT" else 1,
             }
     return out
 
@@ -218,7 +232,8 @@ def missed_by(g: Row) -> str:
     return "A" if g["Edge"] == "A-Bp" else "B"
 
 
-def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings, now: int) -> Result:
+def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings, now: int,
+              feed_states: Optional[FeedStates] = None) -> Result:
     res = Result()
     dates = set(settings.dates())
 
@@ -247,7 +262,7 @@ def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings
         res.edges[edge.name] = _edge(parents, res.links[edge.child_level], edge, settings)
 
     # 4. feed health
-    res.feed_health = feed_health(rows_by_system, dates, settings, now)
+    res.feed_health = feed_health(rows_by_system, dates, settings, now, feed_states)
     # A system is "down" only when every one of its channels is non-current (min, not max): one
     # stale channel out of eight must not mask findings on the other seven (docs/design/04 §5).
     res.system_health = {}
