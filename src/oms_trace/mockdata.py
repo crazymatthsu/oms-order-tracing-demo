@@ -20,8 +20,9 @@ MS = 1_000_000
 MIN = 60 * SEC
 HOUR = 3600 * SEC
 
-#: 2026-10-26T15:00:00Z as epoch nanoseconds.
-NOW = 1_792_861_200 * SEC
+#: 2026-10-26T15:00:00Z (11:00 New York) as epoch nanoseconds; TODAY is the Date of that instant in
+#: America/New_York, which the AMPS source derives from RecvTs (docs/design/11 section 4.4).
+NOW = 1_793_026_800 * SEC
 TODAY = "2026-10-26"
 YESTERDAY = "2026-10-25"
 
@@ -119,6 +120,7 @@ def raw_row(
         "Topic": topic,
         "KafkaPartition": sum(ord(c) for c in order_id) % 4,
         "KafkaOffset": 0,  # assigned by Book.add
+        "SowDeleted": None,  # set by the AMPS SOW source only (docs/design/11 section 4.1)
     }
 
 

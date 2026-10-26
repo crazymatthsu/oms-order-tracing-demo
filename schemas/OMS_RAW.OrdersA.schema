@@ -20,4 +20,5 @@
   <Column name="Topic"          dataType="String"/>
   <Column name="KafkaPartition" dataType="int"/>
   <Column name="KafkaOffset"    dataType="long"/>
+  <Column name="SowDeleted"     dataType="Boolean"/>
 </Table>

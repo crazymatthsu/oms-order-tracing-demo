@@ -10,10 +10,10 @@ The Enterprise sources (``db.live_table`` over DIS partitions) live in :mod:`oms
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from deephaven import dtypes, input_table, new_table
-from deephaven.column import datetime_col, double_col, int_col, long_col, string_col
+from deephaven.column import bool_col, datetime_col, double_col, int_col, long_col, string_col
 from deephaven.table import Table
 from deephaven.time import to_j_instant
 
@@ -25,6 +25,7 @@ _DTYPES = {
     "int": dtypes.int32,
     "double": dtypes.double,
     "Instant": dtypes.Instant,
+    "boolean": dtypes.bool_,
 }
 
 
@@ -37,10 +38,15 @@ def _instants(values: Iterable[Optional[int]]) -> List[Any]:
     return [None if v is None else to_j_instant(int(v)) for v in values]
 
 
-def raw_table(rows: List[Mapping[str, Any]]) -> Table:
-    """One raw table from rows of the contract (timestamps as epoch nanoseconds)."""
+def dtype(kind: str) -> Any:
+    """A contract kind (``String``, ``long``, ``int``, ``double``, ``Instant``, ``boolean``) as a Deephaven dtype."""
+    return _DTYPES[kind]
+
+
+def typed_columns(spec: Iterable[Tuple[str, str]], rows: List[Mapping[str, Any]]) -> List[Any]:
+    """Typed columns for ``rows`` following a ``(name, kind)`` spec (timestamps as epoch nanoseconds)."""
     cols = []
-    for name, kind in config.RAW_COLUMNS:
+    for name, kind in spec:
         values = [r.get(name) for r in rows]
         if kind == "String":
             cols.append(string_col(name, [None if v is None else str(v) for v in values]))
@@ -52,9 +58,21 @@ def raw_table(rows: List[Mapping[str, Any]]) -> Table:
             cols.append(double_col(name, [None if v is None else float(v) for v in values]))
         elif kind == "Instant":
             cols.append(datetime_col(name, _instants(values)))
+        elif kind == "boolean":
+            cols.append(bool_col(name, [None if v is None else bool(v) for v in values]))
         else:  # pragma: no cover - the contract only has these kinds
             raise ValueError(f"unknown raw column kind {kind} for {name}")
-    return new_table(cols)
+    return cols
+
+
+def raw_columns(rows: List[Mapping[str, Any]]) -> List[Any]:
+    """The raw contract's typed columns for ``rows``."""
+    return typed_columns(config.RAW_COLUMNS, rows)
+
+
+def raw_table(rows: List[Mapping[str, Any]]) -> Table:
+    """One raw table from rows of the contract."""
+    return new_table(raw_columns(rows))
 
 
 def mock_tables(book) -> Dict[str, Table]:

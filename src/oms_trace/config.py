@@ -101,8 +101,14 @@ RAW_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("Topic", "String"),
     ("KafkaPartition", "int"),
     ("KafkaOffset", "long"),
+    # docs/design/11 section 4.1: the AMPS SOW source sets it to true when the record left the SOW
+    # (oof / sow_delete / not re-sent by a reconnect snapshot); null on Kafka-fed rows.
+    ("SowDeleted", "boolean"),
 )
 RAW_COLUMN_NAMES: Tuple[str, ...] = tuple(name for name, _ in RAW_COLUMNS)
+RAW_COLUMN_KINDS: Dict[str, str] = dict(RAW_COLUMNS)
+#: Columns the ingester (Kafka) or the source (AMPS) stamps; never read from a message body.
+INGESTER_COLUMNS: Tuple[str, ...] = ("RecvTs", "Topic", "KafkaPartition", "KafkaOffset", "SowDeleted")
 
 #: The canonical node columns every adapter view produces (docs/design/03 section 3).
 CANONICAL_COLUMNS: Tuple[str, ...] = (
@@ -132,7 +138,7 @@ class Settings:
     topics: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
     tz: str = "America/New_York"
     ui_max_roots: int = 20
-    source: str = "mock"  # mock | files | enterprise
+    source: str = "mock"  # mock | files | enterprise | amps
     mock_seed: int = 42
     mock_families: int = 24
     #: "today" for the Date window; None means the wall clock (the PQ's daily restart rolls it).
@@ -232,7 +238,7 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
         topics=topics,
         tz=env.get("OMS_TRACE_TZ", "America/New_York") or "America/New_York",
         ui_max_roots=_int(env, "OMS_TRACE_UI_MAX_ROOTS", 20, minimum=1),
-        source=_choice(env, "OMS_TRACE_SOURCE", "mock", ("mock", "files", "enterprise")),
+        source=_choice(env, "OMS_TRACE_SOURCE", "mock", ("mock", "files", "enterprise", "amps")),
         mock_seed=_int(env, "OMS_TRACE_MOCK_SEED", 42),
         mock_families=_int(env, "OMS_TRACE_MOCK_FAMILIES", 24),
         as_of=as_of,
