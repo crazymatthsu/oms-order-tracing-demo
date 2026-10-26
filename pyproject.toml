@@ -16,6 +16,9 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+# The AMPS client (docs/design/11): the in-worker SOW source, the demo publisher and the tests that
+# drive the fold with real AMPS.Message objects (they skip without it). A binary wheel from PyPI.
+amps = ["amps-python-client>=5.3,<6"]
 # The embedded-engine tests (OMS_TRACE_DH_TEST=1): Community Core 42.5, the engine Enterprise
 # 1.202601 bundles (docs/design/01 Q10). ~600 MB with its JVM jars; needs a JDK 17+.
 engine = ["deephaven-server==42.5", "deephaven-plugin-ui"]

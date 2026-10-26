@@ -1,0 +1,40 @@
+# Both suites of run_tests.sh: the pure-python one (oracle, mock book, AMPS fold, check CLI) on
+# every push and PR, and the embedded Deephaven engine (Community Core 42.5, ~600 MB, a JDK) too.
+# The pip index and every image come from repos.env through scripts/repos.sh, as on a laptop.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pure:
+    name: pure python
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: oracle, mock book, config, AMPS fold, check CLI
+        run: bash run_tests.sh
+
+  engine:
+    name: embedded Deephaven engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: every DAG table equals the oracle; live healing; the AMPS source on the engine
+        env:
+          OMS_TRACE_DH_TEST: "1"
+        run: bash run_tests.sh -p no:cacheprovider

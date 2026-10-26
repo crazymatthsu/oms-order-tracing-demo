@@ -27,7 +27,7 @@ services:
         -Ddeephaven.console.type=python
         -Ddeephaven.application.dir=/app.d
         -DAuthHandlers=io.deephaven.auth.AnonymousAuthenticationHandler
-      OMS_TRACE_SOURCE: "${OMS_TRACE_SOURCE:-mock}"            # mock | files
+      OMS_TRACE_SOURCE: "${OMS_TRACE_SOURCE:-mock}"            # mock | files (amps: docker-compose.amps.yml)
       OMS_TRACE_FILES_DIR: /oms-files
       OMS_TRACE_MOCK_SEED: "${OMS_TRACE_MOCK_SEED:-42}"
       OMS_TRACE_MOCK_FAMILIES: "${OMS_TRACE_MOCK_FAMILIES:-24}"

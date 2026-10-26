@@ -23,13 +23,15 @@ architecture note it reviews is [`docs/original-architecture-note.md`](docs/orig
 | `src/oms_trace/dag.py` | the Deephaven DAG (docs/design/04): last state, role split, four links carrying the root, four edge rollups, feed health per channel, aged gaps, drift by root and by symbol, stats |
 | `src/oms_trace/sources.py` | the raw contract as typed tables; a fixed clock; input tables for live tests |
 | `src/oms_trace/ui_slice.py`, `dashboard.py` | the tree of a capped root selection; the `deephaven.ui` panels |
-| `src/oms_trace/app.py` | `main(globals())`: mock / files / enterprise source → DAG → exported tables |
-| `src/oms_trace/enterprise.py` | every `deephaven_enterprise` touchpoint (`db.live_table` sources, ingester options) |
+| `src/oms_trace/app.py` | `main(globals())`: mock / files / enterprise / amps source → DAG → exported tables |
+| `src/oms_trace/amps_sow.py` | the AMPS SOW source (docs/design/11): one `sow_and_subscribe` per topic, the per-topic fold (snapshot, publish, `oof`, reconnect drops, `SowDeleted`), blink raw tables per system, the `amps_topics` status table that overrides feed health |
+| `src/oms_trace/amps_publish.py`, `amps_testing.py` | the mock book into a broker's SOW topics; the client doubles the tests (and a console) play the broker with |
+| `src/oms_trace/enterprise.py` | every `deephaven_enterprise` touchpoint (`db.live_table` sources, Kafka ingester options, Derived Table Writer options) |
 | `src/oms_trace/trace_check.py` | the pre-cutover feed validation (docs/design/09 §6), JSON lines in/out |
-| `queries/oms_trace/` | the PQ script bodies (`lineage.py`, `ingest.py`) the controller pulls from Git |
+| `queries/oms_trace/` | the PQ script bodies the controller pulls from Git: `lineage.py`, `ingest.py` (Kafka), `ingest_amps.py` (AMPS → Derived Table Writer) |
 | `schemas/`, `routing/`, `pq/` | `OMS_RAW.Orders{A,B,C}` schema XML, `dhconfig dis` commands, PQ exports folder |
-| `docker/`, `scripts/run_demo.sh` | the Community demo on `deephaven/server:42.5` |
-| `tests/` | 26 pure-python tests; 11 embedded-engine tests behind `OMS_TRACE_DH_TEST=1` |
+| `docker/`, `scripts/run_demo.sh` | the Community demo on `deephaven/server:42.5`; `docker-compose.amps.yml` + `docker/amps/` run it over a real AMPS broker |
+| `tests/` | 38 pure-python tests; 14 embedded-engine tests behind `OMS_TRACE_DH_TEST=1` (`.github/workflows/tests.yml` runs both) |
 
 ## Run the tests
 
@@ -43,7 +45,15 @@ The engine tests assert that every DAG table equals the oracle row for row on th
 (links, edges, feed health, gaps, unresolved links, roots, symbols, stats), that a B child
 arriving late on an input table resolves its C parent and re-roots the C children in place, that
 the UI slice builds the tree of a root, and that the app builds on the mock source re-based to
-the wall clock.
+the wall clock. For the AMPS source they deliver the same book as SOW messages through a stub
+client and prove the lineage over the blink tables equals the oracle, that a late child published
+to the SOW heals its parent, that an `oof` leaves a `SowDeleted` state that still explains its
+parent's fills, and that a disconnect turns every topic `STALE`, the re-snapshot `CATCHING_UP`
+and its completion `CURRENT` without changing a finding.
+
+`run_tests.sh` installs the `amps` extra (`amps-python-client`, a binary wheel) so the fold is
+also driven with real `AMPS.Message` objects; `OMS_TRACE_SKIP_AMPS=1` leaves it out and those
+tests skip.
 
 ## Run the demo
 
@@ -62,6 +72,21 @@ and the pip index come from `repos.env`; a JFrog-proxied company overrides them 
 
 `OMS_TRACE_SOURCE=files` reads `orders_{a,b,c}.jsonl` from `docker/files`
 (`bash scripts/run_demo.sh export-files` writes the mock book there as a template).
+
+### Over AMPS SOW topics
+
+```bash
+bash scripts/run_demo.sh up-amps         # derived image (server + amps-python-client), a local broker, OMS_TRACE_SOURCE=amps
+bash scripts/run_demo.sh publish-amps    # the scenario book into the ten SOW topics; the panels fill as the states land
+bash scripts/run_demo.sh down-amps
+```
+
+The broker image is `AMPS_IMAGE` in `repos.env` (60East publishes none; build one from your
+distribution or point the key at your registry). Against your firm's AMPS, drop the `broker`
+profile and set `OMS_AMPS_URI` and `OMS_AMPS_TOPICS_{A,B,C}`; the `amps_topics` panel shows
+every subscription's epoch, snapshot and connection state. `python -m oms_trace.amps_publish
+--delete <topic> <order id>` sends a `sow_delete`, and the record's last state stays in the
+lineage flagged `SowDeleted` (docs/design/11 §4.1).
 
 ## Validate a real feed before cutover
 
@@ -83,6 +108,13 @@ exactly the scenarios built to violate those rules.
   name differs. That confirmation is milestone M2's first task (docs/design/10).
 - Open layout question for M2: one table per system (each topic's ingester in its own internal
   partition, preferred) or one table per topic merged in the adapter (`OMS_TRACE_ONE_TABLE_PER_SYSTEM=false`).
+- **AMPS instead of Kafka** (docs/design/11, decision D16): the AMPS client runs inside a worker
+  either way. `queries/oms_trace/ingest_amps.py` is the `oms-ingest-amps-<x>` PQ (Live Query -
+  Merge Server) that persists the state stream to `OMS_RAW.Orders<X>` through the Derived Table
+  Writer on the same `oms_ingest_<x>` DIS, so the lineage PQ is unchanged; `OMS_TRACE_SOURCE=amps`
+  in the lineage PQ itself skips the DIS for a first UAT. `amps-python-client` must be in the
+  worker's Python environment. The writer's identifiers are marked **confirm on 2026.01.054** like
+  the Kafka ones; `enterprise.dtw_options` holds every value.
 
 ## Settings
 
@@ -90,15 +122,22 @@ Every knob of docs/design/03 §8 and 07 §8 is an environment variable (`OMS_TRA
 `OMS_TRACE_UNRESOLVED_ALERT_SEC`, `OMS_TRACE_FEED_STALE_SEC`, `OMS_TRACE_FEED_CATCHUP_SEC`,
 `OMS_TRACE_AGE_CLOCK=recv|event`, `OMS_TRACE_DATE_WINDOW_DAYS`, `OMS_TRACE_UI_MAX_ROOTS`,
 `OMS_TOPICS_{A,B,C}`, `OMS_TRACE_ONE_TABLE_PER_SYSTEM`, ...). A malformed value is a start-up
-error that names the key.
+error that names the key. The AMPS source adds `OMS_AMPS_URI` (one or more, comma separated),
+`OMS_AMPS_TOPICS_{A,B,C}` (default: the `OMS_TOPICS_*` lists), `OMS_AMPS_FORMAT=json|fix`,
+`OMS_AMPS_FIELD_MAP` (`bodyField=RawColumn,...`), `OMS_AMPS_TAG_MAP` (`tag=RawColumn,...`; the
+parent and upstream tags of a FIX body must be mapped), `OMS_AMPS_HEARTBEAT_SEC` (5),
+`OMS_AMPS_CLIENT_NAME`, `OMS_AMPS_BATCH_SIZE`, `OMS_AMPS_TIMEOUT_MS`, `OMS_AMPS_MAX_PENDING` and,
+for the ingester PQ, `OMS_AMPS_PERSIST_SNAPSHOT`.
 
 ## Status and what is not in this repository yet
 
 Implemented and verified on the engine: the lineage DAG with executed- and open-quantity
 reconciliation, per-channel feed health, the taxonomy, the roots and symbols rollups, the UI
-slice and dashboard, the mock and files sources, the pre-cutover check.
+slice and dashboard, the mock, files and AMPS SOW sources (with the snapshot-aware feed-health
+override and the `SowDeleted` policy), the pre-cutover check, the CI workflow.
 
-Designed, not yet built (docs/design/10 milestones): execution-level identification
-(`exec_breaks`, phase P2b), the break-transition blink table and the Derived Table Writer to
-`OMS_TRACE.DriftEvents`, the alert sink, the EOD summary, edge-family sharding (contingency),
-and the Enterprise ingestion itself, which needs a cluster.
+Written for Enterprise but unverified without a cluster: the Kafka ingester PQ, the AMPS →
+Derived Table Writer ingester PQ, the schemas and routing (identifiers marked confirm on
+2026.01.054). Designed, not yet built (docs/design/10 milestones): execution-level
+identification (`exec_breaks`, phase P2b), the break-transition blink table and the writer to
+`OMS_TRACE.DriftEvents`, the alert sink, the EOD summary, edge-family sharding (contingency).

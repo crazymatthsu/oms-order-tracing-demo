@@ -2,8 +2,9 @@
 #
 # Create/refresh the virtualenv and run the pytest suite.
 #
-#   bash run_tests.sh                      # pure-python suite (oracle, mock book, config, check)
+#   bash run_tests.sh                      # pure-python suite (oracle, mock book, config, AMPS fold, check)
 #   OMS_TRACE_DH_TEST=1 bash run_tests.sh  # also the embedded-engine tests (installs deephaven-server 42.5)
+#   OMS_TRACE_SKIP_AMPS=1 bash run_tests.sh # without the AMPS client wheel (its tests then skip)
 #
 # Artifact sources (pip index, images) come from repos.env and your override file; the files are
 # parsed, never sourced. Portable across macOS bash 3.2, Linux and Git Bash (no GNU-only flags).
@@ -23,7 +24,8 @@ VENV_DIR="$ROOT/.venv"
 VENV_PYTHON="$(venv_python "$VENV_DIR")"
 
 EXTRAS="test"
-if [ "${OMS_TRACE_DH_TEST:-0}" = "1" ]; then EXTRAS="test,engine"; fi
+if [ "${OMS_TRACE_SKIP_AMPS:-0}" != "1" ]; then EXTRAS="$EXTRAS,amps"; fi
+if [ "${OMS_TRACE_DH_TEST:-0}" = "1" ]; then EXTRAS="$EXTRAS,engine"; fi
 "$VENV_PYTHON" -m pip install --quiet --disable-pip-version-check --editable ".[$EXTRAS]"
 
 exec "$VENV_PYTHON" -m pytest tests/ -q "$@"

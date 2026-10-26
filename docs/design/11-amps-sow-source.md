@@ -141,7 +141,8 @@ book. Doc 08 gains the failure row.
 ## 6. What stays open
 
 - The AMPS client library (`amps-python-client`) must be in the worker's Python environment:
-  an addition to the release's frozen-requirements file or a custom worker image.
+  an addition to the release's frozen-requirements file or a custom worker image
+  (`docker/deephaven-amps.Dockerfile` is the Community analogue the demo overlay builds).
 - The body format and the parent/upstream tags of the real topics (Q15/Q16 answered the
   columns; the AMPS tags that carry them are to be read off a sample with `trace_check`).
 - SOW expiry policy per topic: how long a filled or canceled order stays in the SOW decides how
