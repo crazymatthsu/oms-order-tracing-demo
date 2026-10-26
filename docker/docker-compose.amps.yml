@@ -1,0 +1,62 @@
+# Overlay: the lineage over AMPS SOW topics instead of the static mock book (docs/design/11).
+#
+#   bash scripts/run_demo.sh up-amps        # = compose -f docker-compose.yml -f docker-compose.amps.yml --profile broker up -d --build
+#   bash scripts/run_demo.sh publish-amps   # the scenario book into the broker's SOW topics (then watch the panels fill)
+#   bash scripts/run_demo.sh down-amps
+#
+# What it changes against docker-compose.yml:
+#   * the deephaven service runs the derived image of deephaven-amps.Dockerfile (the stock server
+#     plus amps-python-client), built from the base image and the pip index of repos.env;
+#   * OMS_TRACE_SOURCE=amps: one sow_and_subscribe per topic listed in OMS_AMPS_TOPICS_{A,B,C}.
+#     The server comes up even while AMPS is unreachable; the tables fill once it connects.
+#
+# The `broker` profile adds a local AMPS loaded with docker/amps/amps-config.xml (the ten SOW
+# topics of the mock book, JSON bodies keyed on /OrderId). 60East ships AMPS to licensees, there
+# is no public image: AMPS_IMAGE in repos.env names the one you built or your registry holds.
+# Against your firm's AMPS, drop the profile and set OMS_AMPS_URI (credentials in the URI come
+# from your environment, never from a file in this repo) and the topics.
+
+services:
+
+  deephaven:
+    build:
+      context: .
+      dockerfile: deephaven-amps.Dockerfile
+      args:
+        BASE_IMAGE: ${DEEPHAVEN_IMAGE:-ghcr.io/deephaven/server:42.5}   # repos.env
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}        # repos.env
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    image: localhost/oms-trace-deephaven-amps:42.5
+    environment:
+      OMS_TRACE_SOURCE: amps
+      OMS_AMPS_URI: "${OMS_AMPS_URI:-tcp://amps:9007/amps/json}"
+      OMS_AMPS_TOPICS_A: "${OMS_AMPS_TOPICS_A:-oms.a.t1,oms.a.t2}"
+      OMS_AMPS_TOPICS_B: "${OMS_AMPS_TOPICS_B:-oms.b.t1,oms.b.t2,oms.b.t3,oms.b.catchup}"
+      OMS_AMPS_TOPICS_C: "${OMS_AMPS_TOPICS_C:-oms.c.t1,oms.c.t2,oms.c.t3,oms.c.stale}"
+      OMS_AMPS_FORMAT: "${OMS_AMPS_FORMAT:-json}"                 # json | fix
+      OMS_AMPS_FIELD_MAP: "${OMS_AMPS_FIELD_MAP:-}"               # json: body field=RawColumn,...
+      OMS_AMPS_TAG_MAP: "${OMS_AMPS_TAG_MAP:-}"                   # fix: tag=RawColumn,... (parent / upstream tags)
+      OMS_AMPS_HEARTBEAT_SEC: "${OMS_AMPS_HEARTBEAT_SEC:-5}"
+      OMS_AMPS_CLIENT_NAME: "${OMS_AMPS_CLIENT_NAME:-dh-oms-trace-demo}"
+
+  amps:
+    profiles: ["broker"]
+    image: ${AMPS_IMAGE:-localhost/amps-demo:5.3.5.135}   # repos.env; no public image exists
+    container_name: "${AMPS_CONTAINER:-oms-trace-amps}"
+    hostname: amps
+    command: ["/amps/config/amps-config.xml"]
+    volumes:
+      - ./amps/amps-config.xml:/amps/config/amps-config.xml:ro,z
+      - oms-trace-amps-data:/amps/data
+    ports:
+      - "${AMPS_PORT:-9007}:9007"
+      - "${AMPS_ADMIN_PORT:-8085}:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9007'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+volumes:
+  oms-trace-amps-data:

@@ -248,3 +248,173 @@ def test_app_build_on_the_mock_source_follows_the_wall_clock(server):
     exported: dict = {}
     assert "drift_edges" in app.main(exported, settings)
     assert "oms_trace_dashboard" in exported or True  # the dashboard needs the ui plugin; the tables are the contract
+
+
+# -- the AMPS SOW source on the engine (docs/design/11) -----------------------------------------------
+
+def _sow_body(row) -> str:
+    import json
+
+    return json.dumps({k: v for k, v in row.items() if k not in config.INGESTER_COLUMNS})
+
+
+def _publish_rows(feed, rows_by_system, skip=()) -> None:
+    """Every row as a `publish` on its own topic, stamped with the row's RecvTs (the injected clock)."""
+    for system in config.SYSTEMS:
+        for row in rows_by_system[system]:
+            if row["OrderId"] in skip:
+                continue
+            feed["clock"]["now"] = row["RecvTs"]
+            feed["handlers"][row["Topic"]](feed["Message"]("publish", _sow_body(row), sow_key=f"{system}:{row['OrderId']}"))
+    feed["clock"]["now"] = feed["now"]
+
+
+@pytest.fixture(scope="module")
+def amps_feed(server, book, settings):
+    """The scenario book delivered as SOW messages through a stub client; the DAG over the source's blink tables."""
+    from oms_trace import amps_sow, dag, sources
+    from oms_trace.amps_testing import FakeMessage, StubClient, StubCommand
+
+    clients: List[Any] = []
+    clock = {"now": book.now}
+
+    def client_factory(_amps):
+        clients.append(StubClient())
+        return clients[-1]
+
+    env = {"OMS_AMPS_URI": "tcp://stub:9007/amps/json"}
+    env.update({f"OMS_AMPS_TOPICS_{s}": ",".join(settings.topics[s]) for s in config.SYSTEMS})
+    amps = amps_sow.AmpsSettings.from_env(env, settings=settings)
+    source = amps_sow.AmpsSowSource(settings, amps, client_factory=client_factory, command_factory=StubCommand,
+                                    clock=lambda: clock["now"])
+    source.start(background=False)  # builds the blink tables and subscribes through the stub
+    tables = dag.build_lineage(source.raw_tables(), settings, clock=sources.clock_table(book.now),
+                               feed_states=source.topics_table())
+    feed = {"source": source, "tables": tables, "client": clients[0], "handlers": clients[0].handlers,
+            "clock": clock, "now": book.now, "Message": FakeMessage}
+    for handler in feed["handlers"].values():  # an empty SOW first: snapshot boundaries on every topic
+        handler(FakeMessage("group_begin"))
+        handler(FakeMessage("group_end"))
+    _publish_rows(feed, book.rows)
+    yield feed
+    source.stop()
+
+
+def test_amps_fed_lineage_equals_the_oracle(amps_feed, oracle):
+    tables = amps_feed["tables"]
+    expected_nodes = {("Nodes", level): len(oracle.nodes[level]) for level in config.LEVELS}
+
+    def nodes():
+        stats = by_key(tables["trace_stats"], "Metric", "Key")
+        return {k: stats.get(k, {}).get("Value") for k in expected_nodes}
+
+    assert _wait(lambda: nodes() == expected_nodes, 30), nodes()
+    for level, name in (("B_PARENT", "links_bp"), ("B_CHILD", "links_bc"), ("C_PARENT", "links_cp"), ("C_CHILD", "links_cc")):
+        engine = by_key(tables[name], "OrderId")
+        assert set(engine) == set(oracle.links[level]), level
+        cols = ["Level", "System", "LinkId", "Symbol", "Side", "OrderQty", "CumQty", "LeavesQty", "Status", "Topic",
+                "ParentState", "RootId", "RootState", "Mismatch", "ParentSystem", "ParentCumQty", "RecvTs", "AgeTs"]
+        diffs = [(oid, d) for oid, o in oracle.links[level].items() for d in [same(engine[oid], o, cols)] if d]
+        assert diffs == [], (level, diffs[:5])
+    engine = by_key(tables["gaps"], "Edge", "OrderId")
+    assert set(engine) == set(oracle.gaps)
+    cols = ["FillGap", "RouteGap", "ChildCount", "GapAgeSec", "ParentFeed", "ChildSideStale", "FeedStale", "BreakKind",
+            "ShortSide", "OpenAt", "MissedBy", "IsDrift", "RootId"]
+    diffs = [(k, d) for k, o in oracle.gaps.items() for d in [same(engine[k], o, cols)] if d]
+    assert diffs == [], diffs[:5]
+    health = by_key(tables["feed_health"], "System", "Topic")
+    assert set(health) == set(oracle.feed_health)
+    diffs = [(k, d) for k, o in oracle.feed_health.items()
+             for d in [same(health[k], o, ["SilentSec", "BehindSec", "TopicState", "StaleInt", "LastRecvTs"])] if d]
+    assert diffs == []
+    assert all(r["Connected"] is True and r["SnapshotInProgress"] is False for r in health.values())  # the override is in
+    assert set(by_key(tables["drift_by_a_order"], "RootId")) == set(oracle.drift_by_a_order)
+    stats = {(r["Metric"], r["Key"]): r["Value"] for r in rows(tables["trace_stats"])}
+    assert stats == oracle.trace_stats
+    # the exported raw tables are blink: a cycle's rows, while the aggregates see the whole history
+    raw_c = amps_feed["source"].raw_tables()["C"]
+    assert raw_c.is_blink
+    states_c = rows(raw_c.last_by(["OrderId"]))
+    assert len(states_c) == len(oracle.nodes["C_PARENT"]) + len(oracle.nodes["C_CHILD"])
+    assert {r["SowStream"] for r in states_c} == {"change"} and {r["SowEpoch"] for r in states_c} == {1}
+    assert all(m.counts["rejected"] == 0 for m in amps_feed["source"].mirrors.values())
+
+
+def test_amps_publish_heals_a_c_parent_and_an_oof_leaves_a_deleted_state(amps_feed, book):
+    """The in-place healing of the live test, through the SOW; then a record leaves the SOW."""
+    tables, handlers, Message = amps_feed["tables"], amps_feed["handlers"], amps_feed["Message"]
+    fam = mockdata.Book()
+    sc = mockdata.family(fam, "SOWLIVE", recv=book.now - 20 * 60 * mockdata.SEC)
+    late = book_row = [r for r in fam.rows["B"] if r["OrderId"] == sc.ids["Bc1"]][0]
+    _publish_rows(amps_feed, fam.rows, skip={late["OrderId"]})
+
+    def cp():
+        return by_key(tables["links_cp"], "OrderId").get(sc.ids["Cp1"], {})
+
+    assert _wait(lambda: cp().get("ParentState") == "UNRESOLVED")
+    assert cp()["RootId"] is None
+    assert ("C_PARENT", sc.ids["Cp1"]) in by_key(tables["unresolved_links"], "Level", "OrderId")
+    amps_feed["clock"]["now"] = late["RecvTs"]
+    handlers[late["Topic"]](Message("publish", _sow_body(late), sow_key=f"B:{late['OrderId']}"))
+    amps_feed["clock"]["now"] = amps_feed["now"]
+    assert _wait(lambda: cp().get("ParentState") == "LINKED")
+    assert cp()["RootId"] == sc.root_id and cp()["RootState"] == "RESOLVED"
+    ccs = by_key(tables["links_cc"], "OrderId")
+    assert all(ccs[sc.ids[k]]["RootId"] == sc.root_id for k in ("Cc1a", "Cc1b"))
+    assert ("C_PARENT", sc.ids["Cp1"]) not in by_key(tables["unresolved_links"], "Level", "OrderId")
+    assert by_key(tables["edge_bc_cp"], "OrderId")[sc.ids["Bc1"]]["FillGap"] == 0
+    # Cc1a leaves the SOW (an oof with the SowKey only): its last state stays, flagged, and still explains its parent
+    cc = [r for r in fam.rows["C"] if r["OrderId"] == sc.ids["Cc1a"]][0]
+    handlers[cc["Topic"]](Message("oof", sow_key=f"C:{cc['OrderId']}"))
+    states = amps_feed["source"].raw_tables()["C"].last_by(["OrderId"])
+    assert _wait(lambda: by_key(states, "OrderId").get(cc["OrderId"], {}).get("SowDeleted") is True)
+    gone = by_key(states, "OrderId")[cc["OrderId"]]
+    assert gone["CumQty"] == cc["CumQty"] and gone["SowStream"] == "change" and gone["RecvTs"] == amps_feed["now"]
+    assert by_key(tables["links_cc"], "OrderId")[cc["OrderId"]]["CumQty"] == cc["CumQty"]
+    assert by_key(tables["edge_cp_cc"], "OrderId")[sc.ids["Cp1"]]["FillGap"] == 0
+    assert sc.root_id not in by_key(tables["drift_by_a_order"], "RootId")
+    topics = by_key(tables["feed_health"], "System", "Topic")  # the C channel that carried the oof is still current
+    assert topics[("C", cc["Topic"])]["TopicState"] == "CURRENT"
+
+
+def test_amps_disconnect_and_resnapshot_drive_feed_health(amps_feed):
+    """docs/design/11 section 4.2: disconnected -> STALE everywhere; snapshot -> CATCHING_UP; complete -> CURRENT."""
+    source, client, tables, Message = amps_feed["source"], amps_feed["client"], amps_feed["tables"], amps_feed["Message"]
+    handlers = amps_feed["handlers"]
+
+    def states():
+        return {(r["System"], r["Topic"]): r["TopicState"] for r in rows(tables["feed_health"])}
+
+    regular = [(s, t) for s in config.SYSTEMS for t in mockdata.TOPICS[s]]
+    before_gaps = {k: r["BreakKind"] for k, r in by_key(tables["gaps"], "Edge", "OrderId").items()}
+    assert all(states()[k] == "CURRENT" for k in regular)
+    client.connection(False)  # the broker is gone: one client, every topic of every system
+    assert _wait(lambda: all(v == "STALE" for v in states().values()))
+    assert {r["SystemStaleInt"] for r in rows(tables["system_health"])} == {1}
+    assert {r["BreakKind"] for r in rows(tables["gaps"])} == {"FEED_STALE"}  # every finding suppressed, none lost
+    assert len(rows(tables["gaps"])) == len(before_gaps)
+    assert all(r["Connected"] is False for r in rows(tables["feed_health"]))
+    client.connection(True)  # the HA client reconnected; it re-issues every subscription
+    for handler in handlers.values():
+        handler(Message("group_begin"))
+    assert _wait(lambda: all(states()[k] == "CATCHING_UP" for k in regular))
+    assert all(r["SnapshotInProgress"] is True and r["Connected"] is True for r in rows(tables["feed_health"]))
+    # the broker re-sends every live record (the mirror's own records are what it holds), stamped as before
+    for (system, topic), mirror in source.mirrors.items():
+        for row in list(mirror.records.values()):
+            if row["SowDeleted"]:
+                continue
+            amps_feed["clock"]["now"] = row["RecvTs"]
+            handlers[topic](Message("sow", _sow_body(row), sow_key=f"{system}:{row['OrderId']}"))
+    amps_feed["clock"]["now"] = amps_feed["now"]
+    for handler in handlers.values():
+        handler(Message("group_end"))
+    assert _wait(lambda: all(states()[k] == "CURRENT" for k in regular))
+    assert states()[("C", mockdata.TOPIC_C_STALE)] == "STALE" and states()[("B", mockdata.TOPIC_B_CATCHUP)] == "CATCHING_UP"
+    assert all(m.counts["dropped"] == 0 and m.epoch == 2 for m in source.mirrors.values())
+    after_gaps = {k: r["BreakKind"] for k, r in by_key(tables["gaps"], "Edge", "OrderId").items()}
+    assert after_gaps == before_gaps  # an identical re-snapshot changes no finding
+    status = by_key(tables["feed_health"], "System", "Topic")
+    assert all(r["SnapshotInProgress"] is False for r in status.values())
+    topics = by_key(source.topics_table(), "System", "Topic")
+    assert all(r["Epoch"] == 2 and r["Connected"] is True for r in topics.values())

@@ -16,7 +16,7 @@ pages** (links in §11) before the first deployment. Where a name is uncertain i
 |---|---|---|---|---|
 | **Core+ Kafka ingester** in a worker that embeds a Data Import Server | the OMS publishes to Kafka (A8) | the in-worker DIS writes intraday partitions to its private storage; offsets live in the DIS checkpoint record, updated atomically with the table size | resumes from the checkpoint offset: exactly-once; forced replay by ignoring checkpoints or resetting the partition | **yes**, for all three systems |
 | Deephaven binary logs → Data Tailer → system DIS | the OMS (or an adapter next to it) can write Deephaven-format binary logs with the Enterprise logger | the system DIS writes intraday partitions | tailer `startupLookbackTime`; DIS checkpoint truncation | fallback when a feed is not on Kafka |
-| Custom source → `TablePublisher` → Derived Table Writer | AMPS, TCP, files | a DTW appends an add-only/blink table to a DIS | DTW checkpoints | used for **derived** tables (§8), not for raw feeds |
+| Custom source → `TablePublisher` → Derived Table Writer | AMPS, TCP, files | a DTW appends an add-only/blink table to a DIS | DTW checkpoints | used for **derived** tables (§8); and for the **raw feeds when the OMS publishes to AMPS SOW topics**: the in-worker AMPS client plus the DTW of doc 11 (`queries/oms_trace/ingest_amps.py`), snapshot rows persisted on the first start of the day only |
 
 Why not the source doc's "DIS-A tailer" picture: a DIS does not consume Kafka and does not
 write binary logs; the tailer ships logs an application wrote. For Kafka the platform's own

@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A local AMPS broker for the OMS order tracing demo (docs/design/11): the ten SOW topics of the
+  mock book (oms_trace.mockdata.TOPICS plus the stale and catch-up channels), each holding the
+  latest state per order as a JSON body keyed on /OrderId.
+
+  Started by docker/docker-compose.amps.yml under the `broker` profile with the image AMPS_IMAGE
+  of repos.env (there is no public AMPS image; build one from your 60East distribution). Load it
+  with the scenario book:
+
+    bash scripts/run_demo.sh publish-amps
+
+  The message type comes from the client URI (tcp://amps:9007/amps/json) and must agree with
+  each topic's MessageType. Relative paths resolve under /amps/data, a named volume (`down -v`
+  wipes the SOW files). XML comments must not contain two hyphens in a row: AMPS refuses the file.
+
+  * A SOW topic keeps one record per key, so a new state of an order replaces the old one, and
+    sow_and_subscribe gives a subscriber the current records followed by every change.
+  * A record deleted with sow_delete reaches a subscriber that asked for `oof` as an oof message,
+    which the source records as SowDeleted = true (doc 11 section 4.1).
+-->
+<AMPSConfig>
+
+  <Name>oms-order-tracing</Name>
+
+  <Admin>
+    <InetAddr>8085</InetAddr>
+    <FileName>./stats/stats.db</FileName>
+    <Interval>10s</Interval>
+  </Admin>
+
+  <Transports>
+    <Transport>
+      <Name>amps-tcp</Name>
+      <Type>tcp</Type>
+      <InetAddr>9007</InetAddr>
+      <Protocol>amps</Protocol>
+      <ReuseAddr>true</ReuseAddr>
+    </Transport>
+  </Transports>
+
+  <Logging>
+    <Target>
+      <Protocol>stdout</Protocol>
+      <Level>info</Level>
+    </Target>
+  </Logging>
+
+  <!-- One SOW topic per drop-copy channel (Q6), parents and children on the same topic (Q7). -->
+  <SOW>
+    <Topic>
+      <Name>oms.a.t1</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.a.t1.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.a.t2</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.a.t2.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.b.t1</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.b.t1.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.b.t2</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.b.t2.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.b.t3</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.b.t3.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.b.catchup</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.b.catchup.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.c.t1</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.c.t1.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.c.t2</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.c.t2.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.c.t3</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.c.t3.sow</FileName>
+    </Topic>
+    <Topic>
+      <Name>oms.c.stale</Name>
+      <MessageType>json</MessageType>
+      <Key>/OrderId</Key>
+      <FileName>./sow/oms.c.stale.sow</FileName>
+    </Topic>
+  </SOW>
+
+</AMPSConfig>

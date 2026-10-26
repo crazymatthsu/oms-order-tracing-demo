@@ -45,6 +45,7 @@ installed release's Kafka ingester cannot do that, the fallback is one table per
 | `Topic` | String | no | the source topic (Q6: several per system) |
 | `KafkaPartition` | int | no | provenance |
 | `KafkaOffset` | long | no | provenance |
+| `SowDeleted` | Boolean | yes | AMPS SOW source only (doc 11 §4.1): `true` when the record left the SOW; null on Kafka-fed rows |
 
 Enterprise schema sketch (one per table; confirm attribute names against the installed
 version's schema reference):
@@ -69,6 +70,7 @@ version's schema reference):
   <Column name="Topic"          dataType="String"/>
   <Column name="KafkaPartition" dataType="int"/>
   <Column name="KafkaOffset"    dataType="long"/>
+  <Column name="SowDeleted"     dataType="Boolean"/>
 </Table>
 ```
 

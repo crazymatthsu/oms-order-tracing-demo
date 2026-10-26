@@ -20,6 +20,7 @@ Reading order:
 | [08 Operations and failure modes](08-operations-and-failure-modes.md) | failure table, alerts, runbooks, forensic queries | operate it |
 | [09 Testing and validation](09-testing-and-validation.md) | oracle-based tests, scenario catalog, sizing run, pre-cutover validation | build the tests or sign off |
 | [10 Implementation plan](10-implementation-plan.md) | milestones, module layout, reuse from `deephaven-fix42-dashboard`, risks, done | plan the work |
+| [11 AMPS SOW source](11-amps-sow-source.md) | latest order states from AMPS SOW topics instead of Kafka: why it fits, in-worker client + Derived Table Writer (D16), deletes, snapshot-aware feed health, heartbeats | the OMS publishes to AMPS, or ask whether the DIS can be skipped |
 
 The topology (clarified 2026-10-25): A holds the root order; B holds one parent per root and
 many children; C holds one parent per B child and many children under each — five levels, four
