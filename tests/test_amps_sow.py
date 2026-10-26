@@ -14,26 +14,13 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from oms_trace import amps_sow, config, mockdata
+from oms_trace.amps_testing import FakeMessage, StubClient, StubCommand
 from oms_trace.amps_sow import CHANGE, SNAPSHOT, AmpsSettings, TopicMirror
 
 SEC = config.SECOND_NANOS
 NY = ZoneInfo("America/New_York")
 BASE_ENV = {"OMS_AMPS_URI": "tcp://amps-a:9007/amps/json, tcp://user:secret@amps-b:9007/amps/json",
             "OMS_AMPS_TOPICS_A": "oms.a.t1", "OMS_AMPS_TOPICS_B": "oms.b.t1, oms.b.t2", "OMS_AMPS_TOPICS_C": "oms.c.t1"}
-
-
-class FakeMessage:
-    def __init__(self, command: str, data: Optional[str] = None, sow_key: str = "") -> None:
-        self._command, self._data, self._sow_key = command, data, sow_key
-
-    def get_command(self) -> str:
-        return self._command
-
-    def get_sow_key(self) -> str:
-        return self._sow_key
-
-    def get_data(self) -> str:
-        return "" if self._data is None else self._data
 
 
 def real_message(command: str, data: Optional[str] = None, sow_key: str = "") -> Any:
@@ -232,35 +219,6 @@ def test_fix_bodies_fold_the_same_way():
 # -- the source around a stub client ---------------------------------------------------------------
 
 
-class StubCommand:
-    def __init__(self, topic: str, amps: AmpsSettings) -> None:
-        self.topic, self.amps = topic, amps
-
-
-class StubClient:
-    def __init__(self) -> None:
-        self.handlers: Dict[str, Any] = {}
-        self.listeners: List[Any] = []
-        self.closed = False
-        self.unsubscribed: List[Any] = []
-
-    def add_connection_state_listener(self, fn: Any) -> None:
-        self.listeners.append(fn)
-
-    def connect_and_logon(self) -> None:
-        pass
-
-    def execute_async(self, command: StubCommand, handler: Any) -> str:
-        self.handlers[command.topic] = handler
-        return f"sub-{len(self.handlers)}"
-
-    def unsubscribe(self, sub_id: Any) -> None:
-        self.unsubscribed.append(sub_id)
-
-    def close(self) -> None:
-        self.closed = True
-
-
 def stub_source(env: Optional[Dict[str, str]] = None, clock_start: int = mockdata.NOW):
     clients: List[StubClient] = []
     ticks = {"now": clock_start}
@@ -355,3 +313,20 @@ def test_date_window_of_the_source_follows_the_arrival_date():
     row = amps_sow.raw_row("A", "t", {"OrderId": "A-1"}, recv, ZoneInfo("Asia/Tokyo"))
     assert row["Date"] == "2026-10-27"  # 15:00Z is already the 27th in Tokyo
     assert date.fromisoformat(row["Date"]).isoformat() in config.Settings(as_of=date(2026, 10, 26)).dates()
+
+
+def test_publisher_bodies_round_trip_through_the_source(book):
+    """What amps_publish sends, the source reads back as the same contract values (minus the stamped columns)."""
+    from oms_trace import amps_publish
+
+    a = AmpsSettings.from_env(BASE_ENV)
+    parse = amps_sow.make_parser(a)
+    items = list(amps_publish.messages(book.rows))
+    assert len(items) == len(book.all_rows()) and items[0][0] == book.rows["A"][0]["Topic"]
+    for row, (topic, body_text) in zip(book.all_rows(), items):
+        back = amps_sow.raw_row(row["Topic"][4].upper(), topic, parse(body_text), row["RecvTs"], NY)
+        for col in config.RAW_COLUMN_NAMES:
+            if col in ("KafkaPartition", "KafkaOffset", "SowDeleted"):
+                continue
+            assert back[col] == row[col], (row["OrderId"], col, back[col], row[col])
+        assert back["SowDeleted"] is False and back["KafkaOffset"] is None
