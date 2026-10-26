@@ -608,6 +608,21 @@ these points, which the formulas above should be read with:
   period, and a null `Now` reads every gap as `TRANSIENT` until then.
 - **Joins onto `system_health` rename the column** (`ChildSystemStaleInt = SystemStaleInt`).
 
+**Transitions and alerts as built (M3, `oms_trace.events` + `oms_trace.alerting`).** Two
+`listen()` handlers, on `gaps` and on `unresolved_links`, replay the initial state and then read
+the added, removed and modified rows of each cycle (`modified_prev` gives the kind or state
+before), publishing `break_events` rows to a `TablePublisher`; `Ts` is the row's own `Now` (the
+clock joined into the row), so a test with an input-table clock is deterministic. A third
+listener on the clock table, with the observation tables (`trace_stats`, the alerted unresolved
+links, `feed_health`, the suppressed-gap counts per channel, the over-routed roots,
+`drift_by_symbol`) declared as dependencies, builds an `Observation` and runs `AlertPolicy`,
+publishing `alert_events`; `ring_table` turns both blink tables into the `break_history` and
+`alerts` views, and `alerts` joins the sink's `Posted` results. The policy is the same code on
+the oracle's `Result` and on the live tables, so the engine test checks observations and alerts
+for equality step by step. One engine detail: a listener receives String columns as numpy
+`str_` arrays, which spell a null as the text `None`; `RootId` is the only nullable String read
+and is mapped back.
+
 ## 11. Checks the implementation must pass (doc 09 details them)
 
 1. AC1–AC4 against the Python reference oracle, row for row, on the scenario catalog.
