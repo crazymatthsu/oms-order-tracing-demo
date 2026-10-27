@@ -89,11 +89,12 @@ DEFAULT_TIMEOUT_MS = 10_000
 DEFAULT_MAX_PENDING = 250_000
 #: ``oof``: deletes and expiries arrive as ``oof``; ``send_keys``: every message carries its SowKey.
 SUBSCRIBE_OPTIONS = "oof,send_keys"
-#: FIX tag -> raw column, for ``OMS_AMPS_FORMAT=fix`` (docs/design/11 section 4.4). The parent
-#: and upstream tags are firm-specific and come from ``OMS_AMPS_TAG_MAP``.
+#: FIX tag -> raw column, for ``OMS_AMPS_FORMAT=fix`` (docs/design/11 section 4.4). Tag 5011 is system A's
+#: in-system parent id (a destination order names its client order); B's and C's parent and upstream
+#: tags are firm-specific and come from ``OMS_AMPS_TAG_MAP``.
 DEFAULT_TAG_MAP: Mapping[str, str] = {
     "37": "OrderId", "55": "Symbol", "54": "Side", "38": "OrderQty", "14": "CumQty", "151": "LeavesQty",
-    "6": "AvgPx", "39": "OrdStatus", "60": "EventTs", "34": "SeqNo",
+    "6": "AvgPx", "39": "OrdStatus", "60": "EventTs", "34": "SeqNo", "5011": "ParentOrderId",
 }
 #: A status row per topic at most this often outside snapshot boundaries.
 STATUS_INTERVAL_NS = config.SECOND_NANOS

@@ -95,7 +95,8 @@ def test_every_table_is_built(built):
 
 
 def test_links_match_oracle(built, oracle):
-    for level, name in (("B_PARENT", "links_bp"), ("B_CHILD", "links_bc"), ("C_PARENT", "links_cp"), ("C_CHILD", "links_cc")):
+    for level, name in (("A_DEST", "links_dest"), ("B_PARENT", "links_bp"), ("B_CHILD", "links_bc"), ("C_PARENT", "links_cp"),
+                        ("C_CHILD", "links_cc")):
         engine = by_key(built[name], "OrderId")
         assert set(engine) == set(oracle.links[level]), level
         cols = ["Level", "System", "LinkId", "Symbol", "Side", "OrderQty", "CumQty", "LeavesQty", "Status", "Topic",
@@ -148,8 +149,9 @@ def test_unresolved_mismatch_and_root_unresolved_match_oracle(built, oracle):
 def test_roots_symbols_and_stats_match_oracle(built, oracle):
     engine = by_key(built["drift_by_a_order"], "RootId")
     assert set(engine) == set(oracle.drift_by_a_order)
-    cols = ["ACumQty", "ALeavesQty", "StreetCumQty", "StreetLeavesQty", "GapABp", "SumGapBpBc", "SumGapBcCp", "SumGapCpCc",
-            "MissingAtB", "UnbookedAtA", "InternalB", "MissingAtC", "UnbookedAtB", "InternalC", "HeldQty", "OverRoutedQty", "Breaks"]
+    cols = ["ACumQty", "ALeavesQty", "StreetCumQty", "StreetLeavesQty", "GapCliDest", "GapABp", "SumGapBpBc", "SumGapBcCp",
+            "SumGapCpCc", "MissingAtDest", "UnbookedAtCli", "MissingAtB", "UnbookedAtA", "InternalB", "MissingAtC", "UnbookedAtB",
+            "InternalC", "HeldQty", "OverRoutedQty", "Breaks"]
     diffs = [(k, d) for k, o in oracle.drift_by_a_order.items() for d in [same(engine[k], o, cols)] if d]
     assert diffs == []
     engine = by_key(built["drift_by_symbol"], "Symbol", "Side", "Edge")
@@ -212,10 +214,12 @@ def test_ui_slice_builds_the_tree_of_a_root(built, book, settings):
     sc = book.scenarios["MB"]
     nodes, tree = ui_slice.lineage_nodes(built, [sc.root_id], settings)
     got = by_key(nodes, "NodeKey")
-    assert len(got) == 1 + 1 + 2 + 2 + 3  # A, Bp, 2 Bc, 2 Cp, 3 Cc
+    assert len(got) == 1 + 1 + 1 + 2 + 2 + 3  # A client, A destination, Bp, 2 Bc, 2 Cp, 3 Cc
+    assert got[f"A|{sc.ids['Dest']}"]["Depth"] == 1 and got[f"A|{sc.ids['Dest']}"]["ParentKey"] == f"A|{sc.ids['A']}"
+    assert got[f"B|{sc.ids['Bp']}"]["ParentKey"] == f"A|{sc.ids['Dest']}" and got[f"B|{sc.ids['Bp']}"]["Depth"] == 2
     assert got[f"B|{sc.ids['Bp']}"]["BreakKind"] == "MISSING_DOWNSTREAM"
     assert got[f"B|{sc.ids['Bc2']}"]["BreakKind"] == "UNBOOKED_UPSTREAM"
-    assert got[f"C|{sc.ids['Cc2a']}"]["BreakKind"] == "NONE" and got[f"C|{sc.ids['Cc2a']}"]["Depth"] == 4
+    assert got[f"C|{sc.ids['Cc2a']}"]["BreakKind"] == "NONE" and got[f"C|{sc.ids['Cc2a']}"]["Depth"] == 5
     assert tree is not None
     roots = rows(ui_slice.roots_for_order(built, sc.ids["Cc2a"]))
     assert roots == [{"RootId": sc.root_id}]
@@ -315,7 +319,8 @@ def test_amps_fed_lineage_equals_the_oracle(amps_feed, oracle):
         return {k: stats.get(k, {}).get("Value") for k in expected_nodes}
 
     assert _wait(lambda: nodes() == expected_nodes, 30), nodes()
-    for level, name in (("B_PARENT", "links_bp"), ("B_CHILD", "links_bc"), ("C_PARENT", "links_cp"), ("C_CHILD", "links_cc")):
+    for level, name in (("A_DEST", "links_dest"), ("B_PARENT", "links_bp"), ("B_CHILD", "links_bc"), ("C_PARENT", "links_cp"),
+                        ("C_CHILD", "links_cc")):
         engine = by_key(tables[name], "OrderId")
         assert set(engine) == set(oracle.links[level]), level
         cols = ["Level", "System", "LinkId", "Symbol", "Side", "OrderQty", "CumQty", "LeavesQty", "Status", "Topic",

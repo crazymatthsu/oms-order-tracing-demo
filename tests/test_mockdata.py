@@ -3,8 +3,8 @@ from oms_trace import config, mockdata
 
 def test_book_has_every_scenario_and_consistent_healthy_families(book):
     names = set(book.scenarios)
-    for expected in ("CLEAN", "WORK", "MB", "MC", "MCC", "UA", "BPL", "TR", "BCM", "BPM", "AM", "NL", "EP", "TB",
-                     "NRC", "MM", "OF", "DUP", "OOO", "MID", "HELD", "OR", "CNP", "LMX", "FS", "FC", "FAN"):
+    for expected in ("CLEAN", "WORK", "MB", "MC", "MCC", "UA", "BPL", "TR", "BCM", "BPM", "AM", "DM", "DU", "DD", "NL",
+                     "EP", "TB", "NRC", "MM", "OF", "DUP", "OOO", "MID", "HELD", "OR", "CNP", "LMX", "FS", "FC", "FAN"):
         assert expected in names
     assert sum(1 for n in names if n.startswith("H")) >= 24
     rows = book.all_rows()

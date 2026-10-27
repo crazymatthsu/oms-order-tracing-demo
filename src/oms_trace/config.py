@@ -1,6 +1,6 @@
 """The fixed topology, the four edges, the break taxonomy and the settings (docs/design/01, 03).
 
-Everything here is data: the five levels and their parent links, the edges with their scope and
+Everything here is data: the six levels and their parent links, the edges with their scope and
 expected cardinality, the ordered break kinds, the raw column contract, and ``Settings`` read
 from the environment with validation (a malformed value is a start-up error, never a silent
 default).
@@ -15,18 +15,26 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 SYSTEMS: Tuple[str, ...] = ("A", "B", "C")
 
-#: Level name -> system. Five levels, four hops (docs/design/01 section 1).
-LEVELS: Tuple[str, ...] = ("A_ROOT", "B_PARENT", "B_CHILD", "C_PARENT", "C_CHILD")
-LEVEL_SYSTEM: Dict[str, str] = {"A_ROOT": "A", "B_PARENT": "B", "B_CHILD": "B", "C_PARENT": "C", "C_CHILD": "C"}
+#: Level name -> system. Six levels, five hops (docs/design/01 section 1). System A holds the
+#: client-side order (``A_ROOT``, the root of everything) and the destination-side order it routes
+#: to (``A_DEST``, tag 5011 = the client order's id, one per client order); B's parent references
+#: the destination order.
+LEVELS: Tuple[str, ...] = ("A_ROOT", "A_DEST", "B_PARENT", "B_CHILD", "C_PARENT", "C_CHILD")
+LEVEL_SYSTEM: Dict[str, str] = {"A_ROOT": "A", "A_DEST": "A", "B_PARENT": "B", "B_CHILD": "B", "C_PARENT": "C", "C_CHILD": "C"}
 #: Child level -> parent level.
-LEVEL_PARENT: Dict[str, str] = {"B_PARENT": "A_ROOT", "B_CHILD": "B_PARENT", "C_PARENT": "B_CHILD", "C_CHILD": "C_PARENT"}
+LEVEL_PARENT: Dict[str, str] = {"A_DEST": "A_ROOT", "B_PARENT": "A_DEST", "B_CHILD": "B_PARENT", "C_PARENT": "B_CHILD",
+                                "C_CHILD": "C_PARENT"}
 #: Child level -> the raw column that carries its parent's id (cross-system or in-system).
 LEVEL_LINK_COLUMN: Dict[str, str] = {
-    "B_PARENT": "UpstreamRef",
+    "A_DEST": "ParentOrderId",     # tag 5011: the client order's id
+    "B_PARENT": "UpstreamRef",     # the destination order's id
     "B_CHILD": "ParentOrderId",
     "C_PARENT": "UpstreamRef",
     "C_CHILD": "ParentOrderId",
 }
+#: System -> (parent level, child level): every system splits its book on the in-system parent id
+#: column (null = parent), docs/design/03 section 3.
+SYSTEM_LEVELS: Dict[str, Tuple[str, str]] = {"A": ("A_ROOT", "A_DEST"), "B": ("B_PARENT", "B_CHILD"), "C": ("C_PARENT", "C_CHILD")}
 PARENT_SYSTEM: Dict[str, str] = {level: LEVEL_SYSTEM[parent] for level, parent in LEVEL_PARENT.items()}
 #: Level -> depth in the tree (A_ROOT is 0).
 LEVEL_DEPTH: Dict[str, int] = {name: i for i, name in enumerate(LEVELS)}
@@ -54,7 +62,8 @@ class Edge:
 
 
 EDGES: Tuple[Edge, ...] = (
-    Edge("A-Bp", "A_ROOT", "B_PARENT", "CROSS", True),
+    Edge("Cli-Dest", "A_ROOT", "A_DEST", "INTERNAL", True),
+    Edge("A-Bp", "A_DEST", "B_PARENT", "CROSS", True),
     Edge("Bp-Bc", "B_PARENT", "B_CHILD", "INTERNAL", False),
     Edge("Bc-Cp", "B_CHILD", "C_PARENT", "CROSS", True),
     Edge("Cp-Cc", "C_PARENT", "C_CHILD", "INTERNAL", False),
@@ -133,7 +142,7 @@ class Settings:
     feed_catchup_sec: int = 300
     age_clock: str = "recv"  # recv | event
     parent_id_column: str = "ParentOrderId"
-    expect_one_edges: Tuple[str, ...] = ("A-Bp", "Bc-Cp")
+    expect_one_edges: Tuple[str, ...] = ("Cli-Dest", "A-Bp", "Bc-Cp")
     one_table_per_system: bool = True
     topics: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
     tz: str = "America/New_York"
@@ -206,7 +215,7 @@ def _choice(env: Mapping[str, str], key: str, default: str, choices: Sequence[st
 def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
     """Read every ``OMS_TRACE_*`` / ``OMS_TOPICS_*`` key, validating each one."""
     env = os.environ if env is None else env
-    edges_raw = env.get("OMS_TRACE_EXPECT_ONE_EDGES", "A-Bp,Bc-Cp")
+    edges_raw = env.get("OMS_TRACE_EXPECT_ONE_EDGES", "Cli-Dest,A-Bp,Bc-Cp")
     expect_one = tuple(e.strip() for e in edges_raw.split(",") if e.strip())
     unknown = [e for e in expect_one if e not in EDGE_BY_NAME]
     if unknown:

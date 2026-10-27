@@ -33,7 +33,7 @@ def _in_list(values: Iterable[str]) -> str:
 
 
 def lineage_nodes(tables: Mapping[str, Table], root_ids: Sequence[str], settings: config.Settings) -> Tuple[Table, Any]:
-    """One row per node of the selected roots (all five levels) and the native tree over them."""
+    """One row per node of the selected roots (all six levels) and the native tree over them."""
     roots = [r for r in dict.fromkeys(root_ids) if r]
     if not roots:
         raise ValueError("select at least one root order id")
@@ -41,9 +41,9 @@ def lineage_nodes(tables: Mapping[str, Table], root_ids: Sequence[str], settings
         raise ValueError(f"{len(roots)} roots selected; the tree shows at most {settings.ui_max_roots} "
                          f"(OMS_TRACE_UI_MAX_ROOTS) - narrow the selection")
     sel = _in_list(roots)
-    prefix = {"A_ROOT": "A", "B_PARENT": "B", "B_CHILD": "B", "C_PARENT": "C", "C_CHILD": "C"}
+    prefix = {level: config.LEVEL_SYSTEM[level] for level in config.LEVELS}
     parts = []
-    for level, name in (("A_ROOT", "a_root"), ("B_PARENT", "links_bp"), ("B_CHILD", "links_bc"),
+    for level, name in (("A_ROOT", "a_root"), ("A_DEST", "links_dest"), ("B_PARENT", "links_bp"), ("B_CHILD", "links_bc"),
                         ("C_PARENT", "links_cp"), ("C_CHILD", "links_cc")):
         t = tables[name].where(f"RootId in {sel}")
         if level == "A_ROOT":
@@ -65,6 +65,6 @@ def roots_for_order(tables: Mapping[str, Table], order_id: str) -> Table:
     """The root id(s) of any order id from any level (one row, or none while unresolved)."""
     oid = sanitize_id(order_id)
     parts = [tables["a_root"].where(f"OrderId == `{oid}`").view(["RootId"])]
-    for name in ("links_bp", "links_bc", "links_cp", "links_cc"):
+    for name in ("links_dest", "links_bp", "links_bc", "links_cp", "links_cc"):
         parts.append(tables[name].where(f"OrderId == `{oid}` && !isNull(RootId)").view(["RootId"]))
     return merge(parts).select_distinct(["RootId"])

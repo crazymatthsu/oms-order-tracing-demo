@@ -44,9 +44,10 @@ def test_missing_at_c_and_its_children(oracle, book):
 
 def test_unbooked_at_a_and_b_parent_lags(oracle, book):
     s = book.scenarios["UA"]
-    g = gap(oracle, "A-Bp", s.ids["A"])
+    g = gap(oracle, "A-Bp", s.ids["Dest"])  # the cross-system edge is keyed by A's destination order
     assert g["FillGap"] == -100 and g["BreakKind"] == "UNBOOKED_UPSTREAM" and g["MissedBy"] == "A"
     assert oracle.drift_by_a_order[s.root_id]["UnbookedAtA"] == 100
+    assert gap(oracle, "Cli-Dest", s.ids["A"]) is None  # the two A books agree
     s = book.scenarios["BPL"]
     g = gap(oracle, "Bp-Bc", s.ids["Bp"])
     assert g["FillGap"] == -100 and g["BreakKind"] == "UNBOOKED_UPSTREAM" and g["ShortSide"] == "PARENT" and g["MissedBy"] == "B"
@@ -71,16 +72,43 @@ def test_missing_parents_at_each_hop(oracle, book):
         assert ("C_CHILD", s.ids[key]) in oracle.root_unresolved
     assert gap(oracle, "Cp-Cc", s.ids["Cp1"]) is None  # C's own edge still reconciles
 
-    s = book.scenarios["BPM"]  # B parent missing: its children unresolved, A short of everything
+    s = book.scenarios["BPM"]  # B parent missing: its children unresolved, A's destination order short of everything
     for key in ("Bc1", "Bc2"):
         assert oracle.links["B_CHILD"][s.ids[key]]["ParentState"] == "UNRESOLVED"
-    g = gap(oracle, "A-Bp", s.ids["A"])
+    g = gap(oracle, "A-Bp", s.ids["Dest"])
     assert g["ChildCount"] == 0 and g["FillGap"] == 1000 and g["BreakKind"] == "MISSING_DOWNSTREAM" and g["MissedBy"] == "B"
 
-    s = book.scenarios["AM"]  # A missing: the B parent knows its root id anyway
+    s = book.scenarios["AM"]  # the client order missing: its destination order is unresolved, the chain below root-unresolved
+    dest = oracle.links["A_DEST"][s.ids["Dest"]]
+    assert dest["ParentState"] == "UNRESOLVED" and dest["RootId"] is None and dest["RootState"] == "UNRESOLVED"
     bp = oracle.links["B_PARENT"][s.ids["Bp"]]
-    assert bp["ParentState"] == "UNRESOLVED" and bp["RootId"] == s.ids["A"] and bp["RootState"] == "RESOLVED"
-    assert s.root_id not in oracle.drift_by_a_order  # no A row, no root row
+    assert bp["ParentState"] == "LINKED" and bp["RootId"] is None and bp["RootState"] == "UNRESOLVED"
+    assert ("B_PARENT", s.ids["Bp"]) in oracle.root_unresolved
+    assert s.root_id not in oracle.drift_by_a_order  # no client row, no root row
+
+
+def test_client_and_destination_orders(oracle, book):
+    s = book.scenarios["DM"]  # the destination order missing: the B parent is unresolved, the client order short
+    bp = oracle.links["B_PARENT"][s.ids["Bp"]]
+    assert bp["ParentState"] == "UNRESOLVED" and bp["RootId"] is None and bp["LinkId"] == s.ids["Dest"]
+    g = gap(oracle, "Cli-Dest", s.ids["A"])
+    assert g["ChildCount"] == 0 and g["FillGap"] == 1000 and g["BreakKind"] == "MISSING_DOWNSTREAM"
+    assert g["Scope"] == "INTERNAL" and g["MissedBy"] == "A" and g["ExpectOne"]
+    assert oracle.drift_by_a_order[s.root_id]["MissingAtDest"] == 1000
+    s = book.scenarios["DU"]  # the client order shows less than its destination order booked
+    g = gap(oracle, "Cli-Dest", s.ids["A"])
+    assert g["FillGap"] == -100 and g["BreakKind"] == "UNBOOKED_UPSTREAM" and g["MissedBy"] == "A" and g["ShortSide"] == "PARENT"
+    assert oracle.drift_by_a_order[s.root_id]["UnbookedAtCli"] == 100 and oracle.drift_by_a_order[s.root_id]["Breaks"] == 1
+    assert gap(oracle, "A-Bp", s.ids["Dest"]) is None  # the destination order and B agree
+    s = book.scenarios["DD"]  # two destination orders on a 1 : 1 hop
+    g = gap(oracle, "Cli-Dest", s.ids["A"])
+    assert g["ChildCount"] == 2 and g["BreakKind"] == "CARDINALITY" and g["IsDrift"]
+    assert oracle.links["A_DEST"][s.ids["DestDup"]]["RootId"] == s.root_id
+    # the 1 : 1 counter: AM drops a client order (+1), DM a destination order (-1), DD adds one (+1)
+    assert oracle.trace_stats[("DestMinusCli", "")] == len(oracle.nodes["A_DEST"]) - len(oracle.nodes["A_ROOT"]) == 1
+    # every destination order links to its client order and every B parent to a destination order
+    assert all(d["ParentState"] == "LINKED" for oid, d in oracle.links["A_DEST"].items() if oid != book.scenarios["AM"].ids["Dest"])
+    assert sum(1 for b in oracle.links["B_PARENT"].values() if b["ParentState"] != "LINKED") == 1  # DM only
 
 
 def test_no_link_and_empty_parent_id(oracle, book):
@@ -95,12 +123,12 @@ def test_no_link_and_empty_parent_id(oracle, book):
 
 def test_cardinality_and_missing_child(oracle, book):
     s = book.scenarios["TB"]
-    g = gap(oracle, "A-Bp", s.ids["A"])
+    g = gap(oracle, "A-Bp", s.ids["Dest"])
     assert g["ChildCount"] == 2 and g["BreakKind"] == "CARDINALITY" and g["IsDrift"]
     s = book.scenarios["NRC"]
     g = gap(oracle, "Bc-Cp", s.ids["Bc3"])
     assert g["ChildCount"] == 0 and g["CumQty"] == 0 and g["BreakKind"] == "MISSING_CHILD" and not g["IsDrift"]
-    assert gap(oracle, "Bp-Bc", s.ids["Bp"]) is None and gap(oracle, "A-Bp", s.ids["A"]) is None
+    assert gap(oracle, "Bp-Bc", s.ids["Bp"]) is None and gap(oracle, "A-Bp", s.ids["Dest"]) is None
     assert oracle.trace_stats[("CParentsMinusBChildren", "")] == len(oracle.nodes["C_PARENT"]) - len(oracle.nodes["B_CHILD"])
     # NRC drops one C parent (-1) and BCM drops one B child (+1): the book nets to zero on purpose
     assert sum(1 for cp in oracle.links["C_PARENT"].values() if cp["ParentState"] != "LINKED") >= 1
@@ -132,7 +160,7 @@ def test_open_quantity_kinds(oracle, book):
     assert g["RouteGap"] == -300 and g["LeavesQty"] == 0 and g["BreakKind"] == "CHILD_STILL_OPEN"
     assert gap(oracle, "Bc-Cp", s.ids["Bc1"]) is None  # B and C agree on Bc1/Cp1
     s = book.scenarios["LMX"]
-    g = gap(oracle, "A-Bp", s.ids["A"])
+    g = gap(oracle, "A-Bp", s.ids["Dest"])
     assert g["FillGap"] == 0 and g["RouteGap"] == 100 and g["BreakKind"] == "LEAVES_MISMATCH"
 
 
