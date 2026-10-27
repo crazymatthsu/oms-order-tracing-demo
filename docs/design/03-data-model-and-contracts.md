@@ -1,6 +1,6 @@
 # 03 — Data model and contracts
 
-Table names, column names, types and formulas for the design in doc 02, for the five-level
+Table names, column names, types and formulas for the design in doc 02, for the six-level
 topology of doc 01 §1. This document is **binding** for the implementation (doc 10): a
 deviation updates it in the same change. Naming follows Enterprise conventions
 (`Namespace.TableName`, PascalCase columns) for persisted tables, and snake_case Python globals
@@ -130,10 +130,11 @@ uses (`|| ParentOrderId == ```), applied knowingly and recorded here.
 
 ### 4.1 Last state per level
 
-`a_root`, `b_parent`, `b_child`, `c_parent`, `c_child`: `last_by(["OrderId"])` per raw table
-over the `Date` window, then the role split and the adapter view. One row per node. Columns = §3.
+`a_root`, `a_dest`, `b_parent`, `b_child`, `c_parent`, `c_child`: `last_by(["OrderId"])` per raw
+table over the `Date` window, then the role split (in every system, A included since M4: a null
+in-system parent id marks the parent book) and the adapter view. One row per node. Columns = §3.
 
-### 4.2 Linked nodes — `links_bp`, `links_bc`, `links_cp`, `links_cc`
+### 4.2 Linked nodes — `links_dest`, `links_bp`, `links_bc`, `links_cp`, `links_cc`
 
 Each child level with its parent's state joined on and the root carried down. One row per node
 of that level.
@@ -143,16 +144,16 @@ of that level.
 | §3 columns | the node |
 | `ParentPresent` | parent `Present` (null when unresolved) |
 | `ParentCumQty`, `ParentSymbol`, `ParentSide`, `ParentStatus`, `ParentRecvTs` | the parent |
-| `ParentSystem` | the parent level's system (`A`, `B`, `B`, `C`), for the feed check on unresolved rows |
+| `ParentSystem` | the parent level's system (`A`, `A`, `B`, `B`, `C`), for the feed check on unresolved rows |
 | `ParentState` | `LinkId == `` ? NO_LINK : isNull(ParentPresent) ? UNRESOLVED : LINKED` |
-| `RootId` | `B_PARENT`: `LinkId` (the A id, known even before A arrives; null when `LinkId` is empty); other levels: the parent's `RootId` (null while any hop above is missing) |
+| `RootId` | the parent's `RootId`, on every level (null while any hop above is missing). The root is the client order, which B never names: a B parent is root-resolved only once A's destination order has arrived (M4) |
 | `RootState` | `isNull(RootId) ? UNRESOLVED : RESOLVED` |
 | `UnresolvedSince` | `ParentState == UNRESOLVED ? RecvTs : null` |
 | `Mismatch` | parent present and `Symbol`/`Side` differ from the parent's — the `MISMATCH` kind as a flag; `mismatch_links` lists these rows |
 
 `a_root` carries `RootId = OrderId`, `RootState = RESOLVED`, `ParentState = ROOT`.
 
-### 4.3 Edges — `edge_a_bp`, `edge_bp_bc`, `edge_bc_cp`, `edge_cp_cc`
+### 4.3 Edges — `edge_cli_dest`, `edge_a_bp`, `edge_bp_bc`, `edge_bc_cp`, `edge_cp_cc`
 
 Parents with the rollup of their direct children. One row per parent node.
 
@@ -197,8 +198,8 @@ with the clock (doc 04 §5):
 
 | Table | Grain | Columns |
 |---|---|---|
-| `drift_edges` | one row per parent with an aged break | `Edge`, `Scope`, `Level`, `System`, `OrderId`, `RootId`, `RootState`, `Symbol`, `Side`, `Status`, `OrderQty`, `CumQty`, `ChildCount`, `ChildCumQty`, `FillGap`, `LeavesQty`, `ChildLeavesQty`, `RouteGap`, `GapAgeSec`, `BreakKind`, `ShortSide`, `MissedBy`, `OpenAt` |
-| `drift_by_a_order` | one row per root with any aged break below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `StreetCumQty` (Σ `C_CHILD` cum under the root), `GapABp`, `SumGapBpBc`, `SumGapBcCp`, `SumGapCpCc`, `MissingAtB = max(GapABp, 0)`, `UnbookedAtA = max(−GapABp, 0)`, `InternalB = SumGapBpBc` (signed), `MissingAtC = max(SumGapBcCp, 0)`, `UnbookedAtB = max(−SumGapBcCp, 0)`, `InternalC = SumGapCpCc` (signed), `ALeavesQty`, `StreetLeavesQty` (Σ `C_CHILD` leaves under the root), `HeldQty = Σ max(RouteGap, 0)`, `OverRoutedQty = Σ max(−RouteGap, 0)` over the root's aged, feed-current edges (`TRANSIENT`, `FEED_STALE` and `MISSING_CHILD` rows excluded), `Breaks`. A root has a row only when some edge below it is drift (`HELD` alone never makes one) |
+| `drift_edges` | one row per parent with an aged break | `Edge`, `Scope`, `Level`, `System`, `OrderId`, `RootId`, `RootState`, `Symbol`, `Side`, `Status`, `OrderQty`, `CumQty`, `ChildCount`, `ChildCumQty`, `FillGap`, `LeavesQty`, `ChildLeavesQty`, `RouteGap`, `GapAgeSec`, `BreakKind`, `ShortSide`, `MissedBy`, `OpenAt`, `ChildSystem` |
+| `drift_by_a_order` | one row per root with any aged break below it | `RootId`, `Symbol`, `Side`, `ACumQty`, `StreetCumQty` (Σ `C_CHILD` cum under the root), `GapCliDest`, `GapABp`, `SumGapBpBc`, `SumGapBcCp`, `SumGapCpCc`, `MissingAtDest = max(GapCliDest, 0)`, `UnbookedAtCli = max(−GapCliDest, 0)`, `MissingAtB = max(GapABp, 0)`, `UnbookedAtA = max(−GapABp, 0)`, `InternalB = SumGapBpBc` (signed), `MissingAtC = max(SumGapBcCp, 0)`, `UnbookedAtB = max(−SumGapBcCp, 0)`, `InternalC = SumGapCpCc` (signed), `ALeavesQty`, `StreetLeavesQty` (Σ `C_CHILD` leaves under the root), `HeldQty = Σ max(RouteGap, 0)`, `OverRoutedQty = Σ max(−RouteGap, 0)` over the root's aged, feed-current edges (`TRANSIENT`, `FEED_STALE` and `MISSING_CHILD` rows excluded), `Breaks`. A root has a row only when some edge below it is drift (`HELD` alone never makes one) |
 | `drift_by_symbol` | one row per `Symbol`, `Side`, `Edge` | `Breaks`, `ParentCumQty`, `ChildCumQty`, `MissingDownstream = Σ max(FillGap, 0)`, `UnbookedUpstream = Σ max(−FillGap, 0)`, `OverRouted = Σ max(−RouteGap, 0)` |
 | `system_health` | one row per system | `SystemStaleInt = min(StaleInt)` over the system's channels: 1 only when **every** channel is non-current (a system outage); one stale channel out of eight must not mask findings on the other seven |
 | `feed_health` | one row per system and topic | `System`, `Topic`, `LastRecvTs`, `LastEventTs`, `SilentSec`, `BehindSec`, `TopicState` (`CURRENT` / `STALE` / `CATCHING_UP`) — the channel view the alert sink pages on (one alert per topic, R17) |
@@ -208,10 +209,10 @@ with the clock (doc 04 §5):
 | `root_unresolved` | nodes `LINKED` but `RootState = UNRESOLVED` | `Level`, `System`, `OrderId`, `LinkId`, `CumQty` — informational; the alert is on the unresolved node above |
 | `alerts` | the last `OMS_TRACE_ALERT_RING` threshold crossings, one row each (a ring over the `alert_events` blink) | `AlertId`, `Ts`, `Metric` (the doc 08 §2 rule: `unresolved_link`, `unresolved_links`, `c_parents_vs_b_children`, `channel_health`, `stale_system`, `over_routed`, `drift_qty`, `drift_symbols`, `drift_symbol_count`), `Key` (system, edge, symbol, root or `System:OrderId` / `System:Topic`), `Value`, `Threshold`, `Severity` (`WARN` / `PAGE`, and `CLEAR` when the condition ends), `Message`, `Posted` / `PostedTs` / `Attempts` (the HTTP sink's result, `NO_SINK` without a URL); every row is also a `break_events` row with `Level = ALERT` (`Edge` = metric, `OrderId` = key, `From` / `To` = the severities, `FillGap` = value, `GapAgeSec` = threshold) so it lands in `DriftEvents` (Q9) |
 | `break_events` | **blink**: one row per node whose `BreakKind` or `ParentState` changed this cycle, plus the alert rows above | `Ts`, `Level`, `System`, `OrderId`, `RootId`, `Edge`, `From`, `To`, `FillGap`, `GapAgeSec`. `From` / `To` are the kinds or states before and after: `NONE` for a gap appearing or closing, `NEW` for a node arriving unlinked, `LINKED` when its parent lands; an unresolved node's `Edge` is the edge it is the child of. `break_history` keeps the last `OMS_TRACE_ALERT_RING` rows in the worker |
-| `trace_stats` | **long format**: one row per `(Metric, Key)` with a long `Value` | `Nodes` per level, `Unresolved` per child level, `Gaps` / `Drift` / `MissingDownstreamQty` / `UnbookedUpstreamQty` per edge, `CParentsMinusBChildren` (the 1 : 1 check as a count), `TopicStale` per `System:Topic`. Every row exists even when its count is zero (anchored on a one-row table: `count_by` on an empty table yields no row) |
+| `trace_stats` | **long format**: one row per `(Metric, Key)` with a long `Value` | `Nodes` per level, `Unresolved` per child level, `Gaps` / `Drift` / `MissingDownstreamQty` / `UnbookedUpstreamQty` per edge, `CParentsMinusBChildren` and `DestMinusCli` (the 1 : 1 checks as counts), `TopicStale` per `System:Topic`. Every row exists even when its count is zero (anchored on a one-row table: `count_by` on an empty table yields no row) |
 | `exec_breaks` (P2b) | one row per `Edge`, broken parent and `(Qty, Px, TimeKey)` with a non-zero count difference | `Edge`, `ParentId`, `RootId`, `Qty`, `Px`, `TimeKey`, `ParentCount`, `ChildCount`, `Diff = ChildCount − ParentCount`, `Kind` (`EXEC_MISSING_DOWNSTREAM` when the parent has more, `EXEC_UNBOOKED_UPSTREAM` when the children have more), `DroppedQty = |Diff| × Qty`, `DroppedExecIds` (the exec ids on the side with more), `ChildOrderIds`, `Ambiguous` (k of n identical fills) |
 | `exec_breaks_by_edge` (P2b) | one row per `Edge`, broken parent | `RootId`, `FillGap`, `ExplainedGap = Σ (−Diff × Qty)`, `Unexplained = FillGap − ExplainedGap`, `Keys`, `AmbiguousKeys` |
-| `trace_nodes` | UI only, over a **selection**: one row per node of the selected roots, all five levels | §3 columns + `NodeKey`, `ParentKey`, `RootId`, `Depth`, `FillGap`, `BreakKind` |
+| `trace_nodes` | UI only, over a **selection**: one row per node of the selected roots, all six levels | §3 columns + `NodeKey`, `ParentKey`, `RootId`, `Depth`, `FillGap`, `BreakKind` |
 | `trace_tree` | `trace_nodes.tree("NodeKey", "ParentKey", promote_orphans=True)` | |
 
 ## 5. Persisted derived tables — `OMS_TRACE`
@@ -260,10 +261,11 @@ The identities that make the rollups add up (doc 14 §5.3 proves the same telesc
 tested in doc 09): for a root whose every node is linked,
 
 ```
-ACumQty − StreetCumQty = GapABp + Σ GapBpBc + Σ GapBcCp + Σ GapCpCc
+ACumQty − StreetCumQty = GapCliDest + GapABp + Σ GapBpBc + Σ GapBcCp + Σ GapCpCc
+MissingAtDest − UnbookedAtCli = GapCliDest
 MissingAtB − UnbookedAtA = GapABp        MissingAtC − UnbookedAtB = Σ GapBcCp
 InternalB = Σ GapBpBc                    InternalC = Σ GapCpCc
-ALeavesQty − StreetLeavesQty = Σ RouteGap over the four edges = HeldQty − OverRoutedQty
+ALeavesQty − StreetLeavesQty = Σ RouteGap over the five edges = HeldQty − OverRoutedQty
 ```
 
 So `drift_by_a_order` is the source document's "the number system A needs to see", with the

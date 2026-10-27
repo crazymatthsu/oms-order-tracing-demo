@@ -101,7 +101,7 @@ duration of the snapshot either way (§4.2).
   send its `SowKey` header with every message; the source uses it to match an `oof` to the
   record it saw, and the body's `OrderId` is the identity.
 - Body formats: `json` (field names per the raw contract, remappable with `OMS_AMPS_FIELD_MAP`)
-  or `fix` (tag=value bodies with a tag map, defaults: 37 → `OrderId`, 55 → `Symbol`, 54 →
+  or `fix` (tag=value bodies with a tag map, defaults: 37 → `OrderId`, 5011 → `ParentOrderId` (A's destination order naming its client order, M4), 55 → `Symbol`, 54 →
   `Side`, 38 → `OrderQty`, 14 → `CumQty`, 151 → `LeavesQty`, 6 → `AvgPx`, 39 → `OrdStatus`,
   60 → `EventTs`; the cross-system and in-system parent tags are firm-specific and **must** be
   configured).
