@@ -1,8 +1,8 @@
 # oms-order-tracing-demo
 
-Cross-system order tracing on Deephaven: link **A** (Raptor, the client order) → **B** (algo:
-one parent per root, many children) → **C** (order router: one parent per B child, many
-children), reconcile executed and open quantity on each of the four edges (`A-Bp`, `Bp-Bc`,
+Cross-system order tracing on Deephaven: link **A** (Raptor: the client order and the destination order it routes to, tag 5011) → **B** (algo:
+one parent per A destination order, many children) → **C** (order router: one parent per B child, many
+children), reconcile executed and open quantity on each of the five edges (`Cli-Dest`, `A-Bp`, `Bp-Bc`,
 `Bc-Cp`, `Cp-Cc`), and name the system and book that is short.
 
 Built for Deephaven Enterprise 2026.01.054 (Core+ on Community Core 42.5). The lineage logic is
@@ -17,8 +17,8 @@ architecture note it reviews is [`docs/original-architecture-note.md`](docs/orig
 
 | Path | What |
 |---|---|
-| `src/oms_trace/config.py` | the five levels, four edges, break taxonomy, raw column contract, validated `Settings` (`OMS_TRACE_*`) |
-| `src/oms_trace/mockdata.py` | a consistent five-level mock book and the scenario catalog of docs/design/09 §2 |
+| `src/oms_trace/config.py` | the six levels, five edges, break taxonomy, raw column contract, validated `Settings` (`OMS_TRACE_*`) |
+| `src/oms_trace/mockdata.py` | a consistent six-level mock book and the scenario catalog of docs/design/09 §2 |
 | `src/oms_trace/reference.py` | the pure-python oracle: every output table computed with dicts and loops |
 | `src/oms_trace/dag.py` | the Deephaven DAG (docs/design/04): last state, role split, four links carrying the root, four edge rollups, feed health per channel, aged gaps, drift by root and by symbol, stats |
 | `src/oms_trace/sources.py` | the raw contract as typed tables; a fixed clock; input tables for live tests |
@@ -33,7 +33,7 @@ architecture note it reviews is [`docs/original-architecture-note.md`](docs/orig
 | `queries/oms_trace/` | the PQ script bodies the controller pulls from Git: `lineage.py`, `ingest.py` (Kafka), `ingest_amps.py` (AMPS → Derived Table Writer), `drift_writer.py` (`break_events` → `OMS_TRACE.DriftEvents`) |
 | `schemas/`, `routing/`, `pq/` | `OMS_RAW.Orders{A,B,C}` and `OMS_TRACE.DriftEvents` schema XML, `dhconfig dis` commands, PQ exports folder |
 | `docker/`, `scripts/run_demo.sh` | the Community demo on `deephaven/server:42.5`; `docker-compose.amps.yml` + `docker/amps/` run it over a real AMPS broker |
-| `tests/` | 50 pure-python tests; 15 embedded-engine tests behind `OMS_TRACE_DH_TEST=1` (`.github/workflows/tests.yml` runs both) |
+| `tests/` | 51 pure-python tests; 15 embedded-engine tests behind `OMS_TRACE_DH_TEST=1` (`.github/workflows/tests.yml` runs both) |
 
 ## Run the tests
 

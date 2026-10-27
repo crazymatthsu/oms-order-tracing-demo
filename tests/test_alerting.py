@@ -56,7 +56,7 @@ def test_settings_defaults_overrides_hours_and_headers():
 
 
 def gap(edge: str, oid: str, kind: str, fill: int = 100, age: int = 60, root: str = "A-1") -> Dict[str, Any]:
-    level = {"A-Bp": "A_ROOT", "Bp-Bc": "B_PARENT", "Bc-Cp": "B_CHILD", "Cp-Cc": "C_PARENT"}[edge]
+    level = {"Cli-Dest": "A_ROOT", "A-Bp": "A_DEST", "Bp-Bc": "B_PARENT", "Bc-Cp": "B_CHILD", "Cp-Cc": "C_PARENT"}[edge]
     return {"Edge": edge, "OrderId": oid, "Level": level, "System": config.LEVEL_SYSTEM[level], "RootId": root,
             "BreakKind": kind, "FillGap": fill, "GapAgeSec": age}
 

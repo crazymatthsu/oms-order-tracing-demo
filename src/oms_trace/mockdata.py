@@ -1,7 +1,8 @@
 """A five-level mock book and the scenario catalog (docs/design/09 section 2).
 
-Every scenario starts from a consistent family (A -> Bp -> Bc* -> Cp* -> Cc*) and breaks one
-thing on purpose. Ids are readable and unique: ``A-<name>``, ``Bp-<name>``, ``Bc-<name>-<i>``,
+Every scenario starts from a consistent family (A -> Dest -> Bp -> Bc* -> Cp* -> Cc*: the client
+order, its destination order in the same system, then B and C) and breaks one thing on purpose.
+Ids are readable and unique: ``A-<name>``, ``Dest-<name>``, ``Bp-<name>``, ``Bc-<name>-<i>``,
 ``Cp-<name>-<i>``, ``Cc-<name>-<i>-<j>``. Rows carry the raw contract of docs/design/03
 section 2 with timestamps as epoch nanoseconds (UTC) relative to a fixed ``NOW``, so the oracle
 and the engine see identical inputs and the tests are deterministic.
@@ -159,13 +160,17 @@ def family(
     bc_cum = [sum(c) for c in cc_cum]
     a_cum = sum(bc_cum)
 
-    ids: Dict[str, str] = {"A": f"A-{name}", "Bp": f"Bp-{name}"}
+    ids: Dict[str, str] = {"A": f"A-{name}", "Dest": f"Dest-{name}", "Bp": f"Bp-{name}"}
     t = recv
     pick = lambda system, n: topics[system][n % len(topics[system])]  # noqa: E731
+    # the client-side order (the root) and the destination-side order (tag 5011 = the client order's id)
     book.add("A", raw_row(ids["A"], upstream=None, parent=None, symbol=symbol, side=side, qty=qty, cum=a_cum,
                           recv=t, topic=pick("A", len(book.scenarios)), date=date))
     t += MS
-    book.add("B", raw_row(ids["Bp"], upstream=ids["A"], parent=None, symbol=symbol, side=side, qty=qty, cum=a_cum,
+    book.add("A", raw_row(ids["Dest"], upstream=None, parent=ids["A"], symbol=symbol, side=side, qty=qty, cum=a_cum,
+                          recv=t, topic=pick("A", len(book.scenarios)), date=date))
+    t += MS
+    book.add("B", raw_row(ids["Bp"], upstream=ids["Dest"], parent=None, symbol=symbol, side=side, qty=qty, cum=a_cum,
                           recv=t, topic=pick("B", len(book.scenarios)), date=date))
     for i, bq in enumerate(bc_qty, start=1):
         t += MS
@@ -225,8 +230,9 @@ def scenario_catalog(book: Book) -> None:
     s = _clean(book, "MCC", "missing_at_c_children: Cp2 shows 400, its child 300")
     _set(book, "C", s.ids["Cc2a"], CumQty=300, LeavesQty=100)
 
-    s = _clean(book, "UA", "unbooked_at_a: A shows 900, everything below 1000")
+    s = _clean(book, "UA", "unbooked_at_a: A (client and destination orders) shows 900, everything below 1000")
     _set(book, "A", s.ids["A"], CumQty=900, LeavesQty=100)
+    _set(book, "A", s.ids["Dest"], CumQty=900, LeavesQty=100)
 
     s = _clean(book, "BPL", "b_parent_lags: Bp shows 900, its children 1000")
     _set(book, "B", s.ids["Bp"], CumQty=900, LeavesQty=100)
@@ -241,8 +247,20 @@ def scenario_catalog(book: Book) -> None:
     s = _clean(book, "BPM", "late_bp: the B parent has not arrived")
     _remove(book, "B", s.ids["Bp"])
 
-    s = _clean(book, "AM", "late_a: the A root has not arrived")
+    s = _clean(book, "AM", "late_a: the client order has not arrived; its destination order is unresolved")
     _remove(book, "A", s.ids["A"])
+
+    s = _clean(book, "DM", "dest_missing: the destination order has not arrived; the B parent is unresolved, the chain below root-unresolved")
+    _remove(book, "A", s.ids["Dest"])
+
+    s = _clean(book, "DU", "dest_unbooked: the client order shows 900 of the 1000 its destination order booked")
+    _set(book, "A", s.ids["A"], CumQty=900, LeavesQty=100)
+
+    s = _clean(book, "DD", "two_dest: a second destination order references the same client order")
+    dup = dict(book.last("A", s.ids["Dest"]))
+    dup.update(OrderId=f"Dest-{s.name}-dup", RecvTs=dup["RecvTs"] + MS, EventTs=dup["EventTs"] + MS)
+    book.add("A", dup)
+    s.ids["DestDup"] = dup["OrderId"]
 
     s = _clean(book, "NL", "no_link: Cp1 carries no B reference")
     _set(book, "C", s.ids["Cp1"], UpstreamRef=None)
@@ -261,6 +279,7 @@ def scenario_catalog(book: Book) -> None:
     _set(book, "B", s.ids["Bc3"], CumQty=0, LeavesQty=400)
     _set(book, "B", s.ids["Bp"], CumQty=1000, LeavesQty=400)
     _set(book, "A", s.ids["A"], CumQty=1000, LeavesQty=400)
+    _set(book, "A", s.ids["Dest"], CumQty=1000, LeavesQty=400)
     _remove(book, "C", s.ids["Cp3"])
     for key in ("Cc3a",):
         _remove(book, "C", s.ids[key])
@@ -287,6 +306,7 @@ def scenario_catalog(book: Book) -> None:
                note="held: Bp has 200 open that is not routed to any B child")
     # A and Bp are 1000-share orders of which B sliced 800: 700 open at Bp, 500 open below it.
     _set(book, "A", s.ids["A"], OrderQty=1000, CumQty=300, LeavesQty=700)
+    _set(book, "A", s.ids["Dest"], OrderQty=1000, CumQty=300, LeavesQty=700)
     _set(book, "B", s.ids["Bp"], OrderQty=1000, CumQty=300, LeavesQty=700)
     _set(book, "B", s.ids["Bc1"], CumQty=200, LeavesQty=400)
     _set(book, "B", s.ids["Bc2"], CumQty=100, LeavesQty=100)
@@ -298,6 +318,7 @@ def scenario_catalog(book: Book) -> None:
 
     s = _clean(book, "OR", "over_routed: Cp1 has 300 open, its C children 400")
     _set(book, "A", s.ids["A"], CumQty=700, LeavesQty=300)
+    _set(book, "A", s.ids["Dest"], CumQty=700, LeavesQty=300)
     _set(book, "B", s.ids["Bp"], CumQty=700, LeavesQty=300)
     _set(book, "B", s.ids["Bc1"], CumQty=300, LeavesQty=300)
     _set(book, "C", s.ids["Cp1"], CumQty=300, LeavesQty=300)
@@ -306,6 +327,7 @@ def scenario_catalog(book: Book) -> None:
 
     s = _clean(book, "CNP", "cancel_not_propagated: everything canceled, Cc1b still working 300")
     _set(book, "A", s.ids["A"], CumQty=700, LeavesQty=0, OrdStatus="CANCELED")
+    _set(book, "A", s.ids["Dest"], CumQty=700, LeavesQty=0, OrdStatus="CANCELED")
     _set(book, "B", s.ids["Bp"], CumQty=700, LeavesQty=0, OrdStatus="CANCELED")
     _set(book, "B", s.ids["Bc1"], CumQty=300, LeavesQty=0, OrdStatus="CANCELED")
     _set(book, "C", s.ids["Cp1"], CumQty=300, LeavesQty=0, OrdStatus="CANCELED")
@@ -314,6 +336,7 @@ def scenario_catalog(book: Book) -> None:
 
     s = _clean(book, "LMX", "leaves_mismatch_cross: A has 400 open, its B parent 300")
     _set(book, "A", s.ids["A"], CumQty=600, LeavesQty=400)
+    _set(book, "A", s.ids["Dest"], CumQty=600, LeavesQty=400)
     _set(book, "B", s.ids["Bp"], CumQty=600, LeavesQty=300)
     for key in ("Bc1", "Bc2"):
         _set(book, "B", s.ids[key], CumQty=300, LeavesQty=book.last("B", s.ids[key])["OrderQty"] - 300)

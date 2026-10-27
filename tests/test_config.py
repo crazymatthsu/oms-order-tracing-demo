@@ -5,13 +5,16 @@ import pytest
 from oms_trace import config
 
 
-def test_topology_is_five_levels_and_four_edges():
-    assert config.LEVELS == ("A_ROOT", "B_PARENT", "B_CHILD", "C_PARENT", "C_CHILD")
-    assert [e.name for e in config.EDGES] == ["A-Bp", "Bp-Bc", "Bc-Cp", "Cp-Cc"]
-    assert [e.scope for e in config.EDGES] == ["CROSS", "INTERNAL", "CROSS", "INTERNAL"]
-    assert [e.expect_one for e in config.EDGES] == [True, False, True, False]
+def test_topology_is_six_levels_and_five_edges():
+    assert config.LEVELS == ("A_ROOT", "A_DEST", "B_PARENT", "B_CHILD", "C_PARENT", "C_CHILD")
+    assert [e.name for e in config.EDGES] == ["Cli-Dest", "A-Bp", "Bp-Bc", "Bc-Cp", "Cp-Cc"]
+    assert [e.scope for e in config.EDGES] == ["INTERNAL", "CROSS", "INTERNAL", "CROSS", "INTERNAL"]
+    assert [e.expect_one for e in config.EDGES] == [True, True, False, True, False]
     for level in config.LEVELS[1:]:
         assert config.LEVEL_SYSTEM[config.LEVEL_PARENT[level]] == config.PARENT_SYSTEM[level]
+    assert config.LEVEL_LINK_COLUMN["A_DEST"] == "ParentOrderId" and config.LEVEL_LINK_COLUMN["B_PARENT"] == "UpstreamRef"
+    assert config.SYSTEM_LEVELS["A"] == ("A_ROOT", "A_DEST")
+    assert config.load_settings({}).expect_one_edges == ("Cli-Dest", "A-Bp", "Bc-Cp")
 
 
 def test_defaults_and_window():

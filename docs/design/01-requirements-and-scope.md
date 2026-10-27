@@ -5,10 +5,12 @@ asks for, separates requirement from proposed mechanism, pins down the assumptio
 (doc 00) found implicit, and lists what must be answered before the design is frozen. Docs
 02–10 cite requirements by the ids below.
 
-**Topology as clarified on 2026-10-25:** OMS A holds the root order. OMS B holds one parent
-order per A root and many child orders under it. OMS C holds one parent order per B child
-(so C has as many parents as B has children) and many child orders under each. Five levels,
-four edges.
+**Topology as clarified on 2026-10-25, extended on 2026-10-27 (M4):** OMS A holds two orders
+per client order: the client-side order (CLI, the root of everything) and the destination-side
+order it routes to (DEST), whose tag 5011 carries the CLI order's id; one DEST per CLI. OMS B
+holds one parent order per A destination order and many child orders under it. OMS C holds one
+parent order per B child (so C has as many parents as B has children) and many child orders
+under each. Six levels, five edges.
 
 ---
 
@@ -22,13 +24,15 @@ when it does not, **which system, and which book inside it, missed which shares*
 
 | Level | System | Parent level | Link the row carries | Expected cardinality | Role |
 |---|---|---|---|---|---|
-| `A_ROOT` | A | — | none | one per client order | the root; the only level that knows nothing downstream |
-| `B_PARENT` | B | `A_ROOT` | the A order id (cross-system) | **1 : 1** with `A_ROOT` | B's view of the client order |
+| `A_ROOT` | A | — | none | one per client order | the client-side order: the root; the only level that knows nothing downstream |
+| `A_DEST` | A | `A_ROOT` | the client order's id (in-system, tag 5011) | **1 : 1** with `A_ROOT` | the destination-side order: what A sent on to B |
+| `B_PARENT` | B | `A_DEST` | the A destination order's id (cross-system) | **1 : 1** with `A_DEST` | B's view of the order A sent |
 | `B_CHILD` | B | `B_PARENT` | the B parent's order id (in-system) | **1 : n** | B's slices (algo children) |
 | `C_PARENT` | C | `B_CHILD` | the B child's order id (cross-system) | **1 : 1** with `B_CHILD` | C's view of each B slice |
 | `C_CHILD` | C | `C_PARENT` | the C parent's order id (in-system) | **1 : n** | C's venue orders — the **street** level |
 
-The four edges, named by their endpoints: `A-Bp` (cross-system), `Bp-Bc` (inside B),
+The five edges, named by their endpoints: `Cli-Dest` (inside A, the client order against its
+destination order), `A-Bp` (cross-system, the destination order against the B parent), `Bp-Bc` (inside B),
 `Bc-Cp` (cross-system), `Cp-Cc` (inside C). A gap on a cross-system edge means one system
 missed what the other booked; a gap on an in-system edge means a system's own parent and child
 books disagree.
@@ -42,8 +46,8 @@ reached through its B child.
 |---|---|---|---|
 | R1 | Ingest each system's order state feed into Deephaven durably: no acknowledged message is lost, and the full day can be replayed | §1, §11.1 | Kafka or Deephaven binary logs; doc 05 |
 | R2 | Maintain the latest state per order per system, for parents and children alike | §6.2 | last-by on the system-local order id, then a role split |
-| R3 | Link every node to its parent (four hops) and derive the A root of every node | §1, §5 | doc 04 §2 |
-| R4 | Reconcile executed quantity **per edge**: a parent against the sum of its direct children, on all four edges | §1, §6.5, revised by doc 00 F1 | the per-row triple diff is wrong on the 1 : n edges |
+| R3 | Link every node to its parent (five hops) and derive the A root (the client order) of every node | §1, §5 | doc 04 §2 |
+| R4 | Reconcile executed quantity **per edge**: a parent against the sum of its direct children, on all five edges | §1, §6.5, revised by doc 00 F1 | the per-row triple diff is wrong on the 1 : n edges |
 | R5 | Attribute a gap: a parent showing more than its children = the children's book missed executions; children showing more than the parent = the parent's book has not booked them. On a cross-system edge that names a system; on an in-system edge it names the book (parent or child) inside the system | §1 | doc 03 §6 |
 | R6 | Surface non-zero, **aged** gaps only; transient propagation lag is not drift | §8 (clock skew), doc 00 F12 | aging threshold is configuration |
 | R7 | Roll up gaps by root A order (per edge, so the number names the system and book) and by symbol/side | §3.5 | doc 03 §4.5 |

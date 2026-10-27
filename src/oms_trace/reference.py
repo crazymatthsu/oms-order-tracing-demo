@@ -97,7 +97,7 @@ def split_roles(states: Mapping[str, Row], system: str, settings: config.Setting
     return parents, children
 
 
-def _link(children: Iterable[Row], parents: Mapping[str, Row], level: str, root_from_link: bool) -> Dict[str, Row]:
+def _link(children: Iterable[Row], parents: Mapping[str, Row], level: str) -> Dict[str, Row]:
     out: Dict[str, Row] = {}
     for child in children:
         parent = parents.get(child["LinkId"]) if child["LinkId"] else None
@@ -112,10 +112,7 @@ def _link(children: Iterable[Row], parents: Mapping[str, Row], level: str, root_
             "ParentRootId": parent["RootId"] if parent else None,
             "ParentSystem": PARENT_SYSTEM[level],
         })
-        if root_from_link:
-            row["RootId"] = child["LinkId"] or None
-        else:
-            row["RootId"] = row["ParentRootId"]
+        row["RootId"] = row["ParentRootId"]  # the root flows down the chain; unknown until every hop above is present
         row["ParentState"] = "NO_LINK" if child["LinkId"] == "" else ("UNRESOLVED" if parent is None else "LINKED")
         row["RootState"] = "UNRESOLVED" if row["RootId"] is None else "RESOLVED"
         row["UnresolvedSince"] = child["RecvTs"] if row["ParentState"] == "UNRESOLVED" else None
@@ -225,11 +222,10 @@ def break_kind(g: Row, settings: config.Settings) -> str:
 
 
 def missed_by(g: Row) -> str:
-    if g["Scope"] == "INTERNAL":
-        return g["System"]
-    if g["FillGap"] > 0:
-        return "B" if g["Edge"] == "A-Bp" else "C"
-    return "A" if g["Edge"] == "A-Bp" else "B"
+    """A cross-system edge whose children are short names the child system; otherwise the parent's."""
+    if g["Scope"] == "CROSS" and g["FillGap"] > 0:
+        return g["ChildSystem"]
+    return g["System"]
 
 
 def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings, now: int,
@@ -237,15 +233,13 @@ def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings
     res = Result()
     dates = set(settings.dates())
 
-    # 1. last state per order, role split, canonical nodes per level
+    # 1. last state per order, role split (null parent id = parent), canonical nodes per level
     for system in config.SYSTEMS:
         states = last_states(rows_by_system.get(system, []), dates)
         parents, children = split_roles(states, system, settings)
-        if system == "A":
-            res.nodes["A_ROOT"] = {r["OrderId"]: canonical("A_ROOT", r, settings) for r in states.values()}
-        else:
-            res.nodes[f"{system}_PARENT"] = {r["OrderId"]: canonical(f"{system}_PARENT", r, settings) for r in parents}
-            res.nodes[f"{system}_CHILD"] = {r["OrderId"]: canonical(f"{system}_CHILD", r, settings) for r in children}
+        parent_level, child_level = config.SYSTEM_LEVELS[system]
+        res.nodes[parent_level] = {r["OrderId"]: canonical(parent_level, r, settings) for r in parents}
+        res.nodes[child_level] = {r["OrderId"]: canonical(child_level, r, settings) for r in children}
     for node in res.nodes["A_ROOT"].values():
         node.update(RootId=node["OrderId"], RootState="RESOLVED", ParentState="ROOT")
 
@@ -253,7 +247,7 @@ def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings
     linked_parents: Dict[str, Mapping[str, Row]] = {"A_ROOT": res.nodes["A_ROOT"]}
     for level in LEVELS[1:]:
         parents = linked_parents[LEVEL_PARENT[level]]
-        res.links[level] = _link(res.nodes[level].values(), parents, level, root_from_link=(level == "B_PARENT"))
+        res.links[level] = _link(res.nodes[level].values(), parents, level)
         linked_parents[level] = res.links[level]
 
     # 3. edges
@@ -339,10 +333,13 @@ def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings
             "RootId": rid, "Symbol": root["Symbol"], "Side": root["Side"],
             "ACumQty": root["CumQty"], "ALeavesQty": root["LeavesQty"],
             "StreetCumQty": street_cum.get(rid, 0), "StreetLeavesQty": street_leaves.get(rid, 0),
+            "GapCliDest": gap_sum.get(("Cli-Dest", rid), 0),
             "GapABp": gap_sum.get(("A-Bp", rid), 0), "SumGapBpBc": gap_sum.get(("Bp-Bc", rid), 0),
             "SumGapBcCp": gap_sum.get(("Bc-Cp", rid), 0), "SumGapCpCc": gap_sum.get(("Cp-Cc", rid), 0),
             "HeldQty": held.get(rid, 0), "OverRoutedQty": over.get(rid, 0),
         }
+        row["MissingAtDest"] = max(row["GapCliDest"], 0)
+        row["UnbookedAtCli"] = max(-row["GapCliDest"], 0)
         row["MissingAtB"] = max(row["GapABp"], 0)
         row["UnbookedAtA"] = max(-row["GapABp"], 0)
         row["InternalB"] = row["SumGapBpBc"]
@@ -378,6 +375,7 @@ def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings
         st[("MissingDownstreamQty", edge.name)] = sum(max(g["FillGap"], 0) for g in gs if g["IsDrift"])
         st[("UnbookedUpstreamQty", edge.name)] = sum(max(-g["FillGap"], 0) for g in gs if g["IsDrift"])
     st[("CParentsMinusBChildren", "")] = len(res.nodes["C_PARENT"]) - len(res.nodes["B_CHILD"])
+    st[("DestMinusCli", "")] = len(res.nodes["A_DEST"]) - len(res.nodes["A_ROOT"])
     for (system, topic), fh in res.feed_health.items():
         st[("TopicStale", f"{system}:{topic}")] = fh["StaleInt"]
     return res

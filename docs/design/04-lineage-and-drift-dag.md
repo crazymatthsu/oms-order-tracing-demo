@@ -1,14 +1,15 @@
 # 04 — The lineage and drift DAG
 
 The Deephaven table graph that turns three raw tables into the doc 03 outputs for the
-five-level chain `A_ROOT → B_PARENT → B_CHILD → C_PARENT → C_CHILD`. It is written for a
+six-level chain `A_ROOT → A_DEST → B_PARENT → B_CHILD → C_PARENT → C_CHILD` (A's client-side
+and destination-side orders, then B, then C). It is written for a
 Core+ Python worker on Deephaven Enterprise 2026.01.054 (release line 1.202601, Community Core
 42.5 engine, Q10); every operation is Community Core, so the same code runs in a Community
 server of that engine version for the prototype (doc 10 M1) with the three source tables swapped.
 
 The structure is the one the fix42 repo's doc 14 proved for Raptor → algo → router, which is
 this topology one for one (client / algo parent / algo child / router parent / router child).
-The production form below specializes it to the fixed five levels and joins on native id
+The production form below specializes it to the fixed six levels and joins on native id
 columns (doc 02 D8). §8 shows how to run the generic `order_tree_recon` module instead.
 
 ---
@@ -111,14 +112,15 @@ def link(children, parents, root_formula: str, parent_system: str):
         .update_view([root_formula, f"ParentSystem = `{parent_system}`"] + STATE_COLS)
     )
 
-a_root   = a_root.update_view(["RootId = OrderId", "RootState = `RESOLVED`", "ParentState = `ROOT`"])
-links_bp = link(b_parent, a_root,   "RootId = LinkId",       "A")   # the A id is known even before A arrives
-links_bc = link(b_child,  links_bp, "RootId = ParentRootId", "B")   # null while the B parent is missing
-links_cp = link(c_parent, links_bc, "RootId = ParentRootId", "B")
-links_cc = link(c_child,  links_cp, "RootId = ParentRootId", "C")
+a_root     = a_root.update_view(["RootId = OrderId", "RootState = `RESOLVED`", "ParentState = `ROOT`"])
+links_dest = link(a_dest,   a_root,     "RootId = ParentRootId", "A")   # the destination order names its client order (tag 5011)
+links_bp   = link(b_parent, links_dest, "RootId = ParentRootId", "A")   # null while A's destination order is missing
+links_bc   = link(b_child,  links_bp,   "RootId = ParentRootId", "B")   # null while the B parent is missing
+links_cp   = link(c_parent, links_bc,   "RootId = ParentRootId", "B")
+links_cc   = link(c_child,  links_cp,   "RootId = ParentRootId", "C")
 ```
 
-Four joins resolve every node's root. `natural_join` requires unique keys on the right;
+Five joins resolve every node's root, each from the row above it. `natural_join` requires unique keys on the right;
 `last_by("OrderId")` guarantees it. Should a feed violate A1 (two live orders with one id), the
 join would throw and take the PQ down, so the adapter's `last_by` is also the guard that keeps
 the DAG alive.
@@ -451,7 +453,8 @@ flowchart TD
     BALL -->|where child| BC[b_child]
     CALL -->|where parent| CP[c_parent]
     CALL -->|where child| CC[c_child]
-    A --> LBP[links_bp<br/>RootId = LinkId]
+    A --> LD[links_dest<br/>RootId = ParentRootId]
+    LD --> LBP[links_bp<br/>RootId = ParentRootId]
     BP --> LBP
     LBP --> LBC[links_bc<br/>RootId from parent]
     BC --> LBC
@@ -598,8 +601,10 @@ these points, which the formulas above should be read with:
 - **Open-quantity sums per root skip `TRANSIENT`, `FEED_STALE` and `MISSING_CHILD` rows**, and a
   root appears in `drift_by_a_order` only when an edge below it is drift; otherwise a transient
   route gap would create a root row.
-- **`RootId` on a `B_PARENT` is null when its `LinkId` is empty** (`LinkId == `` ? (String) null :
-  LinkId`); a bare `RootId = LinkId` would make a `NO_LINK` parent look root-resolved.
+- **The root flows down from the row above on every level** (M4). With the client order as the
+  root and B naming only A's destination order, a B parent's root is its destination row's root,
+  null until that row lands; the earlier `RootId = LinkId` shortcut for `B_PARENT` is gone, and a
+  `NO_LINK` row is root-unresolved by the same rule.
 - **`MISMATCH` is a column on the link rows** (`Mismatch`), listed in `mismatch_links`; the
   edge taxonomy is evaluated on parent rows only.
 - **`count_by` on an empty table yields no row**, so `trace_stats` is built in long format

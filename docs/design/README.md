@@ -23,10 +23,12 @@ Reading order:
 | [11 AMPS SOW source](11-amps-sow-source.md) | latest order states from AMPS SOW topics instead of Kafka: why it fits, in-worker client + Derived Table Writer (D16), deletes, snapshot-aware feed health, heartbeats | the OMS publishes to AMPS, or ask whether the DIS can be skipped |
 
 The topology (clarified 2026-10-25): A holds the root order; B holds one parent per root and
-many children; C holds one parent per B child and many children under each — five levels, four
+many children; C holds one parent per B child and many children under each — six levels, five
+edges since M4 added A's destination-side order (tag 5011 names the client order) between the
+client order and B (doc 01 §1); before that five levels, four
 edges, the same shape as the fix42 repo's doc 14 module.
 
-The one-paragraph summary: reconcile **per edge** on all four edges (parent versus the sum of
+The one-paragraph summary: reconcile **per edge** on all five edges (parent versus the sum of
 its direct children, in executed **and** open quantity), treat a child whose parent has not arrived as a **state** that heals when
 the parent lands rather than a buffer to retry, ingest each feed through a **Core+ Kafka ingester with an
 in-worker Data Import Server**, run the whole lineage in **one worker** until a measured gate

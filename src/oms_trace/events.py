@@ -117,7 +117,7 @@ class Attachment:
         from deephaven import merge
 
         fh = tables["feed_health"]
-        suppressed = tables["feed_suppressed"].update_view(["ChildSystem = (Edge == `A-Bp` || Edge == `Bp-Bc`) ? `B` : `C`"])
+        suppressed = tables["feed_suppressed"]  # carries ChildSystem (docs/design/03 section 4.5)
         # a suppressed gap counts against every non-current channel involved (alerting.observe_result is the twin)
         parent_side = suppressed.where("!isNull(ParentFeed) && ParentFeed != `CURRENT`").view(["System", "Topic"])
         child_side = (suppressed.where("ChildCount > 0").view(["ChildSystem", "ChildTopics"]).ungroup(["ChildTopics"])

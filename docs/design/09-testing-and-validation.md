@@ -20,7 +20,7 @@ the Deephaven DAG equals the oracle row for row.
 
 ## 2. Scenario catalog
 
-Each scenario is a small five-level book (`A_ROOT`, `B_PARENT`, `B_CHILD`, `C_PARENT`,
+Each scenario is a small six-level book (`A_ROOT`, `A_DEST`, `B_PARENT`, `B_CHILD`, `C_PARENT`,
 `C_CHILD` states) plus the expected `drift_edges`, `drift_by_a_order` and `unresolved_links`.
 L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" reads
 `OrderQty/CumQty`.
@@ -39,10 +39,13 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `late_bc_hours` | Cp1 at T, Bc1 at T + 2 h | `unresolved_links` row with `AgeSec`, `Alerted` after 3600 s; `root_unresolved` holds Cc1a, Cc1b; heals at T + 2 h in one cycle (AC2) |
 | `bc_never` | Cp1's Bc1 never arrives | `UNRESOLVED`, `Alerted`; `Cp-Cc` still reconciles; present next window if the dates are in it (AC4) |
 | `late_bp` | Bc1 arrives before Bp1 | `links_bc UNRESOLVED`; Bc1's Cp and Cc have `RootState UNRESOLVED`; heals when Bp1 lands |
-| `late_a` | Bp1 arrives before A1 | `links_bp UNRESOLVED` but `RootId = A1` already (the A id is on the row); `edge_a_bp` has no A row; heals when A1 lands |
+| `late_a` | Dest1 and Bp1 arrive before A1 | `links_dest UNRESOLVED`; Bp1 `LINKED` but `RootState UNRESOLVED` (B names the destination order, not the client order); heals when A1 lands |
+| `dest_missing` | Dest1 never arrives | `links_bp UNRESOLVED`, the chain below root-unresolved; `MISSING_DOWNSTREAM` on the `Cli-Dest` row once aged (`MissedBy = A`) |
+| `dest_unbooked` | A1 shows 900, Dest1 1000 | `UNBOOKED_UPSTREAM` on the `Cli-Dest` row (`MissedBy = A`); `A-Bp` clean |
+| `two_dest` | two destination orders reference the same client order | `CARDINALITY` on the `Cli-Dest` row once aged |
 | `no_link` | a `C_PARENT` with empty `UpstreamRef` | `NO_LINK`; counted, never joined |
 | `empty_parent_id` | a B row with `ParentOrderId = ""` (empty, not null) | filed as a child with `NO_LINK` (the contract says null means parent); the pre-cutover check reports the count |
-| `two_b_parents` | two B parents reference the same A | `CARDINALITY` on the `A-Bp` row once aged; both B subtrees still reconcile |
+| `two_b_parents` | two B parents reference the same A destination order | `CARDINALITY` on the `A-Bp` row once aged; both B subtrees still reconcile |
 | `b_child_never_reached_c` | Bc3 (400/0) has no C parent | `MISSING_CHILD` (amber) on `Bc-Cp` for Bc3; becomes `MISSING_DOWNSTREAM` if Bc3 executes; `CParentsMinusBChildren = −1` |
 | `mismatch` | a Cc SELL under a BUY Cp | `MISMATCH` on the Cc row; quantities still roll up |
 | `overfill` | a Cp shows `CumQty > OrderQty` | `OVERFILL` on Cp plus whatever gap it causes |

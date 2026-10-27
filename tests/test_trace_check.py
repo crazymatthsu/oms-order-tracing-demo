@@ -10,6 +10,8 @@ def test_analyze_flags_the_deliberate_violations(book):
     verdicts = "\n".join(report["verdicts"])
     assert "empty-string ParentOrderId" in verdicts          # scenario EP
     assert "A-Bp: 1 parents have more than one child" in verdicts  # scenario TB
+    assert "Cli-Dest: 1 parents have more than one child" in verdicts  # scenario DD
+    assert report["systems"]["A"]["parents"] + 1 == report["systems"]["A"]["children"]  # AM, DM and DD net to one
     assert "Bc-Cp: resolution rate" in verdicts              # scenario BCM (the B child never arrived)
     assert report["systems"]["B"]["children_with_upstream_ref"] == 0  # Q16 contract holds in the mock
     assert report["hops"]["Cp-Cc"]["resolution_rate"] == 1.0

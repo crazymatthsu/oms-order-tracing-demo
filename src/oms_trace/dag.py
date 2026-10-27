@@ -20,9 +20,9 @@ from oms_trace.config import EDGES, LEVEL_LINK_COLUMN, LEVEL_SYSTEM, PARENT_SYST
 
 #: Every table ``build_lineage`` returns, in dependency order.
 TABLE_NAMES = (
-    "a_root", "b_parent", "b_child", "c_parent", "c_child",
-    "links_bp", "links_bc", "links_cp", "links_cc",
-    "edge_a_bp", "edge_bp_bc", "edge_bc_cp", "edge_cp_cc",
+    "a_root", "a_dest", "b_parent", "b_child", "c_parent", "c_child",
+    "links_dest", "links_bp", "links_bc", "links_cp", "links_cc",
+    "edge_cli_dest", "edge_a_bp", "edge_bp_bc", "edge_bc_cp", "edge_cp_cc",
     "feed_health", "system_health",
     "gaps", "drift_edges", "feed_suppressed",
     "unresolved_links", "mismatch_links", "root_unresolved",
@@ -41,6 +41,7 @@ DRIFT_EDGE_COLUMNS = [
     "Edge", "Scope", "Level", "System", "OrderId", "RootId", "RootState", "Symbol", "Side", "Status", "OrderQty", "CumQty",
     "ChildCount", "ChildCumQty", "FillGap", "LeavesQty", "ChildLeavesQty", "RouteGap", "GapAgeSec", "BreakKind",
     "ShortSide", "MissedBy", "OpenAt", "ParentFeed", "ChildSideStale", "FeedStale", "IsDrift", "Topic", "ChildTopics",
+    "ChildSystem",
 ]
 
 _PARENT_COLS = [
@@ -103,10 +104,11 @@ def canonical_formulas(level: str, settings: Settings) -> list:
     ]
 
 
-def _link(children: Table, parents: Table, level: str, root_formula: str) -> Table:
+def _link(children: Table, parents: Table, level: str) -> Table:
+    """Join a level onto its parents by the id it carries; the root flows down from the parent row."""
     return (
         children.natural_join(parents, on=["LinkId=OrderId"], joins=_PARENT_COLS)
-        .update_view([root_formula, f"ParentSystem = `{PARENT_SYSTEM[level]}`"] + _STATE_COLS)
+        .update_view(["RootId = ParentRootId", f"ParentSystem = `{PARENT_SYSTEM[level]}`"] + _STATE_COLS)
         .view(LINK_COLUMNS)
     )
 
@@ -212,26 +214,30 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
     pid = settings.parent_id_column
     last = {s: window[s].last_by(["OrderId"]) for s in config.SYSTEMS}
 
-    a_root = last["A"].view(canonical_formulas("A_ROOT", settings)).update_view(
+    # system A: the client-side order (the root) and the destination-side order (tag 5011 names the client order)
+    a_root = last["A"].where(f"isNull({pid})").view(canonical_formulas("A_ROOT", settings)).update_view(
         ["RootId = OrderId", "RootState = `RESOLVED`", "ParentState = `ROOT`"])
+    a_dest = last["A"].where(f"!isNull({pid})").view(canonical_formulas("A_DEST", settings))
     b_parent = last["B"].where(f"isNull({pid})").view(canonical_formulas("B_PARENT", settings))
     b_child = last["B"].where(f"!isNull({pid})").view(canonical_formulas("B_CHILD", settings))
     c_parent = last["C"].where(f"isNull({pid})").view(canonical_formulas("C_PARENT", settings))
     c_child = last["C"].where(f"!isNull({pid})").view(canonical_formulas("C_CHILD", settings))
 
-    # links, top-down, carrying the root; the A id is known on a B parent before A arrives
-    links_bp = _link(b_parent, a_root, "B_PARENT", "RootId = LinkId == `` ? (String) null : LinkId")
-    links_bc = _link(b_child, links_bp, "B_CHILD", "RootId = ParentRootId")
-    links_cp = _link(c_parent, links_bc, "C_PARENT", "RootId = ParentRootId")
-    links_cc = _link(c_child, links_cp, "C_CHILD", "RootId = ParentRootId")
+    # links, top-down, carrying the root: every level takes its parent's RootId, so a node is
+    # root-resolved only once the whole chain above it is present (docs/design/04 section 2)
+    links_dest = _link(a_dest, a_root, "A_DEST")
+    links_bp = _link(b_parent, links_dest, "B_PARENT")
+    links_bc = _link(b_child, links_bp, "B_CHILD")
+    links_cp = _link(c_parent, links_bc, "C_PARENT")
+    links_cc = _link(c_child, links_cp, "C_CHILD")
 
     a_root_linked = a_root.view(LINK_COLUMNS[:len(config.CANONICAL_COLUMNS)] + [
         "ParentPresent = (Boolean) null", "ParentCumQty = NULL_LONG", "ParentSymbol = (String) null",
         "ParentSide = (String) null", "ParentStatus = (String) null", "ParentRecvTs = (java.time.Instant) null",
         "ParentRootId = (String) null", "ParentSystem = ``", "RootId", "ParentState", "RootState",
         "UnresolvedSince = (java.time.Instant) null", "Mismatch = false"])
-    parents_of = {"A_ROOT": a_root_linked, "B_PARENT": links_bp, "B_CHILD": links_bc, "C_PARENT": links_cp}
-    children_of = {"B_PARENT": links_bp, "B_CHILD": links_bc, "C_PARENT": links_cp, "C_CHILD": links_cc}
+    parents_of = {"A_ROOT": a_root_linked, "A_DEST": links_dest, "B_PARENT": links_bp, "B_CHILD": links_bc, "C_PARENT": links_cp}
+    children_of = {"A_DEST": links_dest, "B_PARENT": links_bp, "B_CHILD": links_bc, "C_PARENT": links_cp, "C_CHILD": links_cc}
     edges = {e.name: _edge(parents_of[e.parent_level], children_of[e.child_level], e, settings) for e in EDGES}
 
     # feed health per channel (Q7): a system is down only when every channel is non-current
@@ -266,8 +272,8 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
             " : RouteGap < 0 ? `OVER_ROUTED` : RouteGap > 0 ? `HELD` : `NONE`",
             "ShortSide = FillGap > 0 ? `CHILD` : `PARENT`",
             "OpenAt = RouteGap > 0 ? `PARENT` : (RouteGap < 0 ? `CHILD` : ``)",
-            "MissedBy = Scope == `INTERNAL` ? System"
-            " : (FillGap > 0 ? (Edge == `A-Bp` ? `B` : `C`) : (Edge == `A-Bp` ? `A` : `B`))",
+            # a cross-system edge whose children are short names the child system; otherwise the parent's
+            "MissedBy = (Scope == `CROSS` && FillGap > 0) ? ChildSystem : System",
             "IsDrift = BreakKind != `FEED_STALE` && BreakKind != `TRANSIENT` && BreakKind != `MISSING_CHILD`"
             " && BreakKind != `HELD` && BreakKind != `NONE`",
         ])
@@ -275,7 +281,7 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
     drift_edges = gaps.where("IsDrift").view(DRIFT_EDGE_COLUMNS)
     feed_suppressed = gaps.where("BreakKind == `FEED_STALE`").view(DRIFT_EDGE_COLUMNS)
 
-    all_links = merge([links_bp, links_bc, links_cp, links_cc])
+    all_links = merge([links_dest, links_bp, links_bc, links_cp, links_cc])
     unresolved_links = (
         all_links.where("ParentState != `LINKED`")
         .natural_join(clock, on=[], joins=["Now"])
@@ -305,14 +311,17 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
     roots = a_root.view(["RootId", "Symbol", "Side", "ACumQty = CumQty", "ALeavesQty = LeavesQty"])
     drift_by_a_order = (
         roots
+        .natural_join(gap_sum_by_root("Cli-Dest", "GapCliDest"), on=["RootId"], joins=["GapCliDest", "GapCliDestBreaks"])
         .natural_join(gap_sum_by_root("A-Bp", "GapABp"), on=["RootId"], joins=["GapABp", "GapABpBreaks"])
         .natural_join(gap_sum_by_root("Bp-Bc", "SumGapBpBc"), on=["RootId"], joins=["SumGapBpBc", "SumGapBpBcBreaks"])
         .natural_join(gap_sum_by_root("Bc-Cp", "SumGapBcCp"), on=["RootId"], joins=["SumGapBcCp", "SumGapBcCpBreaks"])
         .natural_join(gap_sum_by_root("Cp-Cc", "SumGapCpCc"), on=["RootId"], joins=["SumGapCpCc", "SumGapCpCcBreaks"])
         .natural_join(street_by_root, on=["RootId"], joins=["StreetCumQty", "StreetLeavesQty"])
         .natural_join(route_by_root, on=["RootId"], joins=["HeldQty", "OverRoutedQty"])
-        .where("!isNull(GapABpBreaks) || !isNull(SumGapBpBcBreaks) || !isNull(SumGapBcCpBreaks) || !isNull(SumGapCpCcBreaks)")
+        .where("!isNull(GapCliDestBreaks) || !isNull(GapABpBreaks) || !isNull(SumGapBpBcBreaks)"
+               " || !isNull(SumGapBcCpBreaks) || !isNull(SumGapCpCcBreaks)")
         .update_view([
+            "GapCliDest = isNull(GapCliDest) ? 0L : GapCliDest",
             "GapABp = isNull(GapABp) ? 0L : GapABp",
             "SumGapBpBc = isNull(SumGapBpBc) ? 0L : SumGapBpBc",
             "SumGapBcCp = isNull(SumGapBcCp) ? 0L : SumGapBcCp",
@@ -321,18 +330,22 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
             "StreetLeavesQty = isNull(StreetLeavesQty) ? 0L : StreetLeavesQty",
             "HeldQty = isNull(HeldQty) ? 0L : HeldQty",
             "OverRoutedQty = isNull(OverRoutedQty) ? 0L : OverRoutedQty",
+            "MissingAtDest = GapCliDest > 0 ? GapCliDest : 0L",
+            "UnbookedAtCli = GapCliDest < 0 ? -GapCliDest : 0L",
             "MissingAtB = GapABp > 0 ? GapABp : 0L",
             "UnbookedAtA = GapABp < 0 ? -GapABp : 0L",
             "InternalB = SumGapBpBc",
             "MissingAtC = SumGapBcCp > 0 ? SumGapBcCp : 0L",
             "UnbookedAtB = SumGapBcCp < 0 ? -SumGapBcCp : 0L",
             "InternalC = SumGapCpCc",
-            "Breaks = (isNull(GapABpBreaks) ? 0L : GapABpBreaks) + (isNull(SumGapBpBcBreaks) ? 0L : SumGapBpBcBreaks)"
+            "Breaks = (isNull(GapCliDestBreaks) ? 0L : GapCliDestBreaks) + (isNull(GapABpBreaks) ? 0L : GapABpBreaks)"
+            " + (isNull(SumGapBpBcBreaks) ? 0L : SumGapBpBcBreaks)"
             " + (isNull(SumGapBcCpBreaks) ? 0L : SumGapBcCpBreaks) + (isNull(SumGapCpCcBreaks) ? 0L : SumGapCpCcBreaks)",
         ])
         .view(["RootId", "Symbol", "Side", "ACumQty", "ALeavesQty", "StreetCumQty", "StreetLeavesQty",
-               "GapABp", "SumGapBpBc", "SumGapBcCp", "SumGapCpCc", "MissingAtB", "UnbookedAtA", "InternalB",
-               "MissingAtC", "UnbookedAtB", "InternalC", "HeldQty", "OverRoutedQty", "Breaks"])
+               "GapCliDest", "GapABp", "SumGapBpBc", "SumGapBcCp", "SumGapCpCc", "MissingAtDest", "UnbookedAtCli",
+               "MissingAtB", "UnbookedAtA", "InternalB", "MissingAtC", "UnbookedAtB", "InternalC", "HeldQty",
+               "OverRoutedQty", "Breaks"])
     )
     drift_by_symbol = (
         gaps.where("IsDrift")
@@ -345,7 +358,8 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
     )
 
     # stats, long format: (Metric, Key, Value)
-    levels = {"A_ROOT": a_root, "B_PARENT": b_parent, "B_CHILD": b_child, "C_PARENT": c_parent, "C_CHILD": c_child}
+    levels = {"A_ROOT": a_root, "A_DEST": a_dest, "B_PARENT": b_parent, "B_CHILD": b_child, "C_PARENT": c_parent,
+              "C_CHILD": c_child}
     stats = [_count(t, "Nodes", level) for level, t in levels.items()]
     stats += [_count(children_of[level].where("ParentState != `LINKED`"), "Unresolved", level) for level in children_of]
     for e in EDGES:
@@ -358,13 +372,18 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
                  .natural_join(c_parent.count_by("Cp"), on=[], joins=["Cp"])
                  .natural_join(b_child.count_by("Bc"), on=[], joins=["Bc"])
                  .update_view(["Value = (isNull(Cp) ? 0L : Cp) - (isNull(Bc) ? 0L : Bc)"]).view(["Metric", "Key", "Value"]))
+    stats.append(_one_row("DestMinusCli", "")
+                 .natural_join(a_dest.count_by("D"), on=[], joins=["D"])
+                 .natural_join(a_root.count_by("R"), on=[], joins=["R"])
+                 .update_view(["Value = (isNull(D) ? 0L : D) - (isNull(R) ? 0L : R)"]).view(["Metric", "Key", "Value"]))
     stats.append(feed_health.view(["Metric = `TopicStale`", "Key = System + `:` + Topic", "Value = (long) StaleInt"]))
     trace_stats = merge(stats)
 
     tables: Dict[str, Table] = {
-        "a_root": a_root, "b_parent": b_parent, "b_child": b_child, "c_parent": c_parent, "c_child": c_child,
-        "links_bp": links_bp, "links_bc": links_bc, "links_cp": links_cp, "links_cc": links_cc,
-        "edge_a_bp": edges["A-Bp"], "edge_bp_bc": edges["Bp-Bc"], "edge_bc_cp": edges["Bc-Cp"], "edge_cp_cc": edges["Cp-Cc"],
+        "a_root": a_root, "a_dest": a_dest, "b_parent": b_parent, "b_child": b_child, "c_parent": c_parent, "c_child": c_child,
+        "links_dest": links_dest, "links_bp": links_bp, "links_bc": links_bc, "links_cp": links_cp, "links_cc": links_cc,
+        "edge_cli_dest": edges["Cli-Dest"], "edge_a_bp": edges["A-Bp"], "edge_bp_bc": edges["Bp-Bc"],
+        "edge_bc_cp": edges["Bc-Cp"], "edge_cp_cc": edges["Cp-Cc"],
         "feed_health": feed_health, "system_health": system_health,
         "gaps": gaps, "drift_edges": drift_edges, "feed_suppressed": feed_suppressed,
         "unresolved_links": unresolved_links, "mismatch_links": mismatch_links, "root_unresolved": root_unresolved,

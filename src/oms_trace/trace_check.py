@@ -81,9 +81,7 @@ def analyze(rows_by_system: Mapping[str, List[Row]], parent_col: str = "ParentOr
     def nodes(level: str) -> Dict[str, Row]:
         system = config.LEVEL_SYSTEM[level]
         states = last[system]
-        if level == "A_ROOT":
-            return states
-        is_parent = level.endswith("_PARENT")
+        is_parent = level == config.SYSTEM_LEVELS[system][0]
         return {k: r for k, r in states.items() if (r.get(parent_col) is None) == is_parent}
 
     by_level = {level: nodes(level) for level in config.LEVELS}
