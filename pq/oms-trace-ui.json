@@ -1,0 +1,22 @@
+{
+  "name": "oms-trace-ui",
+  "description": "The desks' dashboard over the small tables of oms-lineage, reached with the Core+ client inside the worker (docs/design/07 section 4). Dependent on oms-lineage; viewers are the desk groups.",
+  "type": "Live Query (Script)",
+  "dispatcher": "query",
+  "script": "queries/oms_trace/ui.py",
+  "heap_gb": 8,
+  "daily_restart": "00:25",
+  "restart_attempts": 5,
+  "restart_delay_sec": 30,
+  "init_timeout_sec": 600,
+  "dependencies": [
+    "oms-lineage"
+  ],
+  "env": {
+    "DH_CONNECTION_JSON_URL": "${DH_CONNECTION_JSON_URL}",
+    "DH_UI_KEYFILE": "${DH_SERVICE_KEYFILE}",
+    "OMS_LINEAGE_PQ": "oms-lineage",
+    "OMS_TRACE_TZ": "${OMS_TRACE_TZ}",
+    "OMS_TRACE_SRC": "${OMS_TRACE_SRC:-}"
+  }
+}

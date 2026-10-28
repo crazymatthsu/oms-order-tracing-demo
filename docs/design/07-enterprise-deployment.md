@@ -43,15 +43,16 @@ oms-order-tracing/                     # this design's implementation repo (doc 
 ├── queries/oms_trace/                 # iris.scripts.repo.<name>.paths = queries/oms_trace
 │   ├── ingest.py                      # one script, OMS_SYSTEM selects the system
 │   ├── lineage.py                     # app entry: builds the doc 04 DAG, exports globals
-│   ├── drift_writer.groovy            # DTW binding (doc 05 §8.1)
+│   ├── drift_writer.py                # DTW binding (doc 05 §8.1)
 │   ├── ui.py                          # deephaven.ui dashboard, subscribes to oms-lineage
 │   ├── eod_summary.py                 # doc 05 §8.2
 │   └── collector.py                   # P3
 ├── src/oms_trace/                     # the importable package the scripts use
 ├── schemas/                           # OMS_RAW.*.schema, OMS_TRACE.*.schema (doc 03)
 ├── routing/                           # dhconfig dis commands / routing.yml fragments (doc 05 §2)
-├── pq/                                # dhconfig pq export XML of every PQ above, versioned
-└── scripts/                           # deploy_schemas.sh, deploy_dis.sh, deploy_pqs.sh, check_env.sh
+├── pq/                                # one JSON definition per PQ (the source of truth) and the dhconfig exports
+└── scripts/                           # check_env.sh, deploy_schemas.sh, deploy_dis.sh, deploy_git_repo.sh,
+                                       # build_wheel.sh, install_worker_venv.sh, deploy_pqs.sh (docs/deployment.md)
 ```
 
 The scripts import `oms_trace` through the controller's module path mapping (the sibling doc's
@@ -156,6 +157,9 @@ properties) or `oms_trace.config` defaults.
 A malformed value is a start-up error (as the fix42 modules do), never a silent default.
 
 ## 9. Deployment order (first install and every environment)
+
+Implemented for Podman on-prem in [`../deployment.md`](../deployment.md) (M5): the scripts below
+exist under `scripts/`, the PQ definitions under `pq/*.json`, the settings in `deploy/deploy.env`.
 
 1. `scripts/check_env.sh`: Enterprise version (expected 2026.01.054, Q10) and the matching Core+ Python package version, dispatcher heap caps,
    Kafka reachability from the merge nodes, storage mounted on merge and query nodes.

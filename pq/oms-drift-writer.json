@@ -1,0 +1,23 @@
+{
+  "name": "oms-drift-writer",
+  "description": "break_events of oms-lineage into OMS_TRACE.DriftEvents through the Derived Table Writer on the oms_trace DIS (docs/design/05 section 8.1). Dependent on oms-lineage.",
+  "type": "Live Query - Merge Server",
+  "dispatcher": "merge",
+  "script": "queries/oms_trace/drift_writer.py",
+  "heap_gb": 4,
+  "daily_restart": "00:20",
+  "restart_attempts": 5,
+  "restart_delay_sec": 30,
+  "init_timeout_sec": 600,
+  "dependencies": [
+    "oms-lineage"
+  ],
+  "env": {
+    "DH_CONNECTION_JSON_URL": "${DH_CONNECTION_JSON_URL}",
+    "DH_UI_KEYFILE": "${DH_SERVICE_KEYFILE}",
+    "OMS_LINEAGE_PQ": "oms-lineage",
+    "DIS_STORAGE_ROOT": "${DIS_STORAGE_ROOT}",
+    "OMS_TRACE_TZ": "${OMS_TRACE_TZ}",
+    "OMS_TRACE_SRC": "${OMS_TRACE_SRC:-}"
+  }
+}

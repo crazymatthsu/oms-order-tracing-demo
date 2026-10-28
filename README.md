@@ -30,10 +30,11 @@ architecture note it reviews is [`docs/original-architecture-note.md`](docs/orig
 | `src/oms_trace/events.py` | the engine glue: listeners on `gaps`, `unresolved_links` and the clock publishing `break_events` / `alert_events`; `break_history` and `alerts` (with the sink's `Posted`) as ring tables |
 | `src/oms_trace/enterprise.py` | every `deephaven_enterprise` touchpoint (`db.live_table` sources, Kafka ingester options, Derived Table Writer options) |
 | `src/oms_trace/trace_check.py` | the pre-cutover feed validation (docs/design/09 §6), JSON lines in/out |
-| `queries/oms_trace/` | the PQ script bodies the controller pulls from Git: `lineage.py`, `ingest.py` (Kafka), `ingest_amps.py` (AMPS → Derived Table Writer), `drift_writer.py` (`break_events` → `OMS_TRACE.DriftEvents`) |
-| `schemas/`, `routing/`, `pq/` | `OMS_RAW.Orders{A,B,C}` and `OMS_TRACE.DriftEvents` schema XML, `dhconfig dis` commands, PQ exports folder |
+| `queries/oms_trace/` | the PQ script bodies the controller pulls from Git: `lineage.py`, `ingest.py` (Kafka), `ingest_amps.py` (AMPS → Derived Table Writer), `drift_writer.py` (`break_events` → `OMS_TRACE.DriftEvents`), `ui.py` (the desks' dashboard PQ) |
+| `schemas/`, `pq/`, `deploy/` | `OMS_RAW.Orders{A,B,C}` and `OMS_TRACE.DriftEvents` schema XML; one JSON definition per `oms-*` PQ (`oms_trace.pqdefs` validates and applies them); the deployment settings template |
+| `scripts/check_env.sh`, `deploy_schemas.sh`, `deploy_dis.sh`, `deploy_git_repo.sh`, `build_wheel.sh`, `install_worker_venv.sh`, `deploy_pqs.sh` | the Podman on-prem deployment kit, step by step: [`docs/deployment.md`](docs/deployment.md) |
 | `docker/`, `scripts/run_demo.sh` | the Community demo on `deephaven/server:42.5`; `docker-compose.amps.yml` + `docker/amps/` run it over a real AMPS broker |
-| `tests/` | 51 pure-python tests; 15 embedded-engine tests behind `OMS_TRACE_DH_TEST=1` (`.github/workflows/tests.yml` runs both) |
+| `tests/` | 56 pure-python tests; 15 embedded-engine tests behind `OMS_TRACE_DH_TEST=1` (`.github/workflows/tests.yml` runs both) |
 
 ## Run the tests
 
@@ -106,6 +107,8 @@ resolution below 99.9 % on a hop, two children on a 1 : 1 hop). On the mock book
 exactly the scenarios built to violate those rules.
 
 ## Enterprise
+
+Deploying to a Podman on-prem cluster, step by step with the scripts of this repository: [`docs/deployment.md`](docs/deployment.md).
 
 - `queries/oms_trace/lineage.py` is the `oms-lineage` PQ body (`OMS_TRACE_SOURCE=enterprise`,
   `db.live_table` over `OMS_RAW.Orders{A,B,C}`); `queries/oms_trace/ingest.py` the per-topic Kafka

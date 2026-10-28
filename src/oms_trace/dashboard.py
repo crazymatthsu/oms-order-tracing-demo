@@ -12,7 +12,8 @@ from typing import Any, Mapping
 from oms_trace import config, ui_slice
 
 
-def build(tables: Mapping[str, Any], settings: config.Settings):
+def build(tables: Mapping[str, Any], settings: config.Settings, tree: bool = True):
+    """The dashboard; ``tree=False`` for a UI PQ that holds the small tables only (queries/oms_trace/ui.py)."""
     from deephaven import ui
 
     @ui.component
@@ -50,7 +51,10 @@ def build(tables: Mapping[str, Any], settings: config.Settings):
                 set_error(f"{type(exc).__name__}: {exc}")
 
         tree_panel = None
-        if root:
+        if not tree:
+            tree_panel = ui.panel(ui.text("The lineage tree is on the lineage PQ's own oms_trace_dashboard (this PQ holds the small tables only)."),
+                                  title="Lineage")
+        elif root:
             try:
                 nodes, tree = ui_slice.lineage_nodes(tables, [root], settings)
                 tree_panel = ui.panel(ui.table(tree), title=f"Lineage {root}")

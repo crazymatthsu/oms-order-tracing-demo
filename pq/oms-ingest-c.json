@@ -1,0 +1,20 @@
+{
+  "name": "oms-ingest-c",
+  "description": "Kafka ingester for system C: every topic of OMS_TOPICS_C into OMS_RAW.OrdersC through the in-worker DIS oms_ingest_c (docs/design/05 section 4). Split into one PQ per group of <= 4 topics when a system has more (Q6).",
+  "type": "Live Query - Merge Server",
+  "dispatcher": "merge",
+  "script": "queries/oms_trace/ingest.py",
+  "heap_gb": 4,
+  "daily_restart": "00:05",
+  "restart_attempts": 5,
+  "restart_delay_sec": 30,
+  "init_timeout_sec": 600,
+  "env": {
+    "OMS_SYSTEM": "C",
+    "OMS_TOPICS": "${OMS_TOPICS_C}",
+    "KAFKA_BOOTSTRAP": "${KAFKA_BOOTSTRAP}",
+    "OMS_TRACE_ONE_TABLE_PER_SYSTEM": "true",
+    "OMS_TRACE_TZ": "${OMS_TRACE_TZ}",
+    "OMS_TRACE_SRC": "${OMS_TRACE_SRC:-}"
+  }
+}
