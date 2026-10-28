@@ -44,14 +44,14 @@ L1 asserts the oracle; L2 asserts the engine equals the oracle. "A(1000/1000)" r
 | `dest_unbooked` | A1 shows 900, Dest1 1000 | `UNBOOKED_UPSTREAM` on the `Cli-Dest` row (`MissedBy = A`); `A-Bp` clean |
 | `two_dest` | two destination orders reference the same client order | `CARDINALITY` on the `Cli-Dest` row once aged |
 | `no_link` | a `C_PARENT` with empty `UpstreamRef` | `NO_LINK`; counted, never joined |
-| `empty_parent_id` | a B row with `ParentOrderId = ""` (empty, not null) | filed as a child with `NO_LINK` (the contract says null means parent); the pre-cutover check reports the count |
+| `empty_parent_id` | a B row with `ParentOrderID = ""` (empty, not null) | filed as a child with `NO_LINK` (the contract says null means parent); the pre-cutover check reports the count |
 | `two_b_parents` | two B parents reference the same A destination order | `CARDINALITY` on the `A-Bp` row once aged; both B subtrees still reconcile |
 | `b_child_never_reached_c` | Bc3 (400/0) has no C parent | `MISSING_CHILD` (amber) on `Bc-Cp` for Bc3; becomes `MISSING_DOWNSTREAM` if Bc3 executes; `CParentsMinusBChildren = −1` |
 | `mismatch` | a Cc SELL under a BUY Cp | `MISMATCH` on the Cc row; quantities still roll up |
 | `overfill` | a Cp shows `CumQty > OrderQty` | `OVERFILL` on Cp plus whatever gap it causes |
 | `bust` | Cc reports 300 then 200 (bust); Cp, Bc, Bp, A follow within 30 s | transient negative gaps climbing the chain, then none; if Bc never follows: `Bc-Cp` on Bc2 `+100 MISSING_DOWNSTREAM` (B says 400, C says 300) |
 | `duplicate_messages` | the same Cc state delivered twice | identical to once |
-| `out_of_order_same_order` | Cc states with `SeqNo` 2 then 1 | last-by on arrival keeps the stale one unless the adapter orders by `SeqNo` (documents the configured mode; A8) |
+| `out_of_order_same_order` | Cc states with `MsgSeqNum` 2 then 1 | last-by on arrival keeps the stale one unless the adapter orders by `MsgSeqNum` (documents the configured mode; A8) |
 | `rekey_c_ref` | a Cp's `UpstreamRef` rotates after a Bc cancel/replace (not expected: references are root ids, Q4; robustness only) | `UNRESOLVED` in the native-id DAG, visible in `unresolved_links`; the generic id-history DAG would link it, which is the fallback if the feed ever changes |
 | `midnight` | Bc on `Date` D, Cp on D + 1, window 2 | `LINKED` |
 | `window_exceeded` | Bc on D, Cp on D + 2, window 2 | `UNRESOLVED` on D + 2 (documented limitation; sets Q7) |
@@ -133,10 +133,10 @@ topic (or a day of `OMS_RAW` exported to files) and prints, per system:
 
 - rows, distinct `OrderId`, messages per order (expect ≥ 1, median by Q3);
 - `UpstreamRef` null rate (must be ~0 on B and C, 100 % on A);
-- **role split**: parents (null `ParentOrderId`) versus children per system; the
-  **empty-string `ParentOrderId` count, which must be 0** (the Q15 contract); and the
+- **role split**: parents (null `ParentOrderID`) versus children per system; the
+  **empty-string `ParentOrderID` count, which must be 0** (the Q15 contract); and the
   **non-null `UpstreamRef` count on children, which must be 0** (the Q16 contract: children
-  carry `ParentOrderId` only) — a non-zero count means the feed changed;
+  carry `ParentOrderID` only) — a non-zero count means the feed changed;
 - **resolution rate per hop**: B parents → A ids, B children → B parent ids, C parents → B
   child ids, C children → C parent ids (AC7 ≥ 99.9 % on a complete sample window; lower means
   A5/A6 or an ingestion gap);
@@ -144,7 +144,7 @@ topic (or a day of `OMS_RAW` exported to files) and prints, per system:
   per parent inside B and C (Q2); flags > 1 000 as a probable key error;
 - `CumQty` monotonicity per order (busts counted; Q8); `LeavesQty` present on every row (Q14)
   and `LeavesQty <= OrderQty − CumQty` except on busts;
-- `EventTs` (tag 60) present and within a few seconds of `RecvTs` on every system (Q12: GMT,
+- `TransactTime` (tag 60) present and within a few seconds of `RecvTs` on every system (Q12: GMT,
   comparable), so `OMS_TRACE_AGE_CLOCK=event` is safe to enable;
 - the share of children that arrive **after** their parent within each system: expected ≈ 100 %
   (Q7); a materially lower share means partition lag is reordering families (Q11), which the DAG
@@ -159,7 +159,7 @@ topic (or a day of `OMS_RAW` exported to files) and prints, per system:
 - `ExecRefId` present on every `BUST`/`CORRECT` and resolving to an earlier `ExecId` of the same
   order (A14);
 - symbol/side coding per system (A7);
-- `SeqNo`/`EventTs` ordering versus arrival (A8).
+- `MsgSeqNum`/`TransactTime` ordering versus arrival (A8).
 
 Cutover requires the printed report attached to the change record, with every assumption in
 doc 01 §4 either confirmed or reflected in configuration.

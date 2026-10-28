@@ -26,7 +26,7 @@ WINDOW    = int(os.environ.get("OMS_TRACE_DATE_WINDOW_DAYS", "2"))
 AGE_SEC   = int(os.environ.get("OMS_TRACE_GAP_AGE_SEC", "30"))
 UNRES_SEC = int(os.environ.get("OMS_TRACE_UNRESOLVED_ALERT_SEC", "3600"))
 CLOCK     = os.environ.get("OMS_TRACE_CLOCK_SEC", "30")
-PARENT_ID = os.environ.get("OMS_TRACE_PARENT_ID_COLUMN", "ParentOrderId")
+PARENT_ID = os.environ.get("OMS_TRACE_PARENT_ID_COLUMN", "ParentOrderID")
 
 def date_window(days: int) -> list[str]:
     """today-(days-1) .. today, plus tomorrow so the midnight rollover needs no restart."""
@@ -69,7 +69,7 @@ def canon(level: str, system: str, link: str | None):
         "RecvTs",
         "Topic = isNull(Topic) ? `` : Topic",            # the drop-copy channel, for the feed check (Q7)
         # the aging clock: receive time by default; event time (tag 60, GMT, Q12) when OMS_TRACE_AGE_CLOCK=event
-        "AgeTs = " + ("EventTs" if os.environ.get("OMS_TRACE_AGE_CLOCK", "recv") == "event" else "RecvTs"),
+        "AgeTs = " + ("TransactTime" if os.environ.get("OMS_TRACE_AGE_CLOCK", "recv") == "event" else "RecvTs"),
         "Present = true",
     ]
 
@@ -196,13 +196,13 @@ clock = time_table(f"PT{CLOCK}S").view(["Now = Timestamp"]).last_by()
 
 # Feed health per drop-copy channel (topic): when it last spoke, and how far behind the market
 # its newest state is (Q7: a system or channel outage stalls its orders for hours, then replays;
-# Q12: EventTs is GMT and comparable). One row per topic; cheap.
+# Q12: TransactTime is GMT and comparable). One row per topic; cheap.
 STALE_SEC   = int(os.environ.get("OMS_TRACE_FEED_STALE_SEC", "120"))
 CATCHUP_SEC = int(os.environ.get("OMS_TRACE_FEED_CATCHUP_SEC", "300"))
 
 def topic_health(system: str):
     return (
-        raw("Orders", system).agg_by([agg.max_(["LastRecvTs = RecvTs", "LastEventTs = EventTs"])], by=["Topic"])
+        raw("Orders", system).agg_by([agg.max_(["LastRecvTs = RecvTs", "LastEventTs = TransactTime"])], by=["Topic"])
         .natural_join(clock, on=[], joins=["Now"])
         .update_view([
             f"System = `{system}`",
@@ -652,7 +652,7 @@ which is what made one engine test flaky before it created its state views up fr
 8. The open-quantity identity on every fully linked root:
    `ALeavesQty − StreetLeavesQty == Σ RouteGap == HeldQty − OverRoutedQty`; `HELD` never sets
    `IsDrift`; a 1 : 1 edge with `RouteGap != 0` is `LEAVES_MISMATCH`, never `HELD`.
-9. With `OMS_TRACE_AGE_CLOCK=event` every age is measured against `EventTs`; with `recv`
+9. With `OMS_TRACE_AGE_CLOCK=event` every age is measured against `TransactTime`; with `recv`
    against `RecvTs`; the two agree on the scenario books (which stamp both identically).
 10. While any channel on either side of an edge is `STALE` or `CATCHING_UP`, no gap on that edge
     is drift and no alert fires except the channel's own; when the channel returns to `CURRENT`

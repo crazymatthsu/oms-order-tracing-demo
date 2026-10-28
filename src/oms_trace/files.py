@@ -32,7 +32,7 @@ def rows_from_dir(directory: str) -> Dict[str, List[Dict[str, Any]]]:
                     if not line:
                         continue
                     row = json.loads(line)
-                    for col in ("RecvTs", "EventTs"):
+                    for col in ("RecvTs", "TransactTime"):
                         row[col] = _ts(row.get(col))
                     rows.append({name: row.get(name) for name in config.RAW_COLUMN_NAMES})
         out[system] = rows

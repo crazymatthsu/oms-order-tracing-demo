@@ -91,7 +91,8 @@ bash scripts/run_demo.sh down-amps
 
 The broker image is `AMPS_IMAGE` in `repos.env` (60East publishes none; build one from your
 distribution or point the key at your registry). Against your firm's AMPS, drop the `broker`
-profile and set `OMS_AMPS_URI` and `OMS_AMPS_TOPICS_{A,B,C}`; the `amps_topics` panel shows
+profile and set `OMS_AMPS_URI`, `OMS_AMPS_TOPICS_{A,B,C}` and the firm's link tags per system
+(`OMS_AMPS_TAG_MAP_{A,B,C}`, see below); the `amps_topics` panel shows
 every subscription's epoch, snapshot and connection state. `python -m oms_trace.amps_publish
 --delete <topic> <order id>` sends a `sow_delete`, and the record's last state stays in the
 lineage flagged `SowDeleted` (docs/design/11 §4.1).
@@ -138,9 +139,11 @@ Every knob of docs/design/03 §8 and 07 §8 is an environment variable (`OMS_TRA
 `OMS_TRACE_AGE_CLOCK=recv|event`, `OMS_TRACE_DATE_WINDOW_DAYS`, `OMS_TRACE_UI_MAX_ROOTS`,
 `OMS_TOPICS_{A,B,C}`, `OMS_TRACE_ONE_TABLE_PER_SYSTEM`, ...). A malformed value is a start-up
 error that names the key. The AMPS source adds `OMS_AMPS_URI` (one or more, comma separated),
-`OMS_AMPS_TOPICS_{A,B,C}` (default: the `OMS_TOPICS_*` lists), `OMS_AMPS_FORMAT=json|fix`,
-`OMS_AMPS_FIELD_MAP` (`bodyField=RawColumn,...`), `OMS_AMPS_TAG_MAP` (`tag=RawColumn,...`; the
-parent and upstream tags of a FIX body must be mapped), `OMS_AMPS_HEARTBEAT_SEC` (5),
+`OMS_AMPS_TOPICS_{A,B,C}` (default: the `OMS_TOPICS_*` lists), `OMS_AMPS_FORMAT=fix|json` (FIX 4.2
+execution reports by default: the standard tags feed the raw columns of the same name, docs/design/03 §2),
+`OMS_AMPS_TAG_MAP_{A,B,C}` (`tag=RawColumn,...`: each system's own tags for `UpstreamRef` and
+`ParentOrderID`; A defaults to `5011=ParentOrderID`, B and C must be set or the source refuses to start),
+`OMS_AMPS_TAG_MAP` (the same, for every system), `OMS_AMPS_FIELD_MAP` (`json` only), `OMS_AMPS_HEARTBEAT_SEC` (5),
 `OMS_AMPS_CLIENT_NAME`, `OMS_AMPS_BATCH_SIZE`, `OMS_AMPS_TIMEOUT_MS`, `OMS_AMPS_MAX_PENDING`,
 `OMS_AMPS_MODE=sow|bookmark` (the ingester PQ runs `bookmark`: a transaction-log subscription that
 resumes from a file-backed store under `OMS_AMPS_BOOKMARK_DIR`, first start per

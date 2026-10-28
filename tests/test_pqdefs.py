@@ -16,7 +16,8 @@ PQ_DIR = os.path.join(ROOT, "pq")
 ENV = {"OMS_TRACE_TZ": "America/New_York", "OMS_TOPICS_A": "a1,a2", "OMS_TOPICS_B": "b1", "OMS_TOPICS_C": "c1",
        "KAFKA_BOOTSTRAP": "k:9093", "DH_CONNECTION_JSON_URL": "https://infra/connection.json",
        "DH_SERVICE_KEYFILE": "/secrets/svc.pem", "DH_SERVICE_USER": "oms-trace-svc", "DIS_STORAGE_ROOT": "/db/dis",
-       "OMS_AMPS_URI": "tcp://amps:9007/amps/json", "OMS_AMPS_BOOKMARK_DIR": "/db/dis/oms_amps_bookmarks",
+       "OMS_AMPS_URI": "tcp://amps:9007/amps/fix", "OMS_AMPS_BOOKMARK_DIR": "/db/dis/oms_amps_bookmarks",
+       "OMS_AMPS_TAG_MAP_B": "5020=UpstreamRef,5021=ParentOrderID", "OMS_AMPS_TAG_MAP_C": "5030=UpstreamRef,5031=ParentOrderID",
        "QUERY_SERVER": "Query_1", "MERGE_SERVER": "Merge_1",
        "DH_ADMIN_GROUPS": "oms-trace-ops", "DH_VIEWER_GROUPS": "oms-desk-a,oms-desk-b", "GIT_REPO_NAME": "oms_trace"}
 

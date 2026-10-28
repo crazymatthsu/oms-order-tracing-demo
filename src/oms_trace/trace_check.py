@@ -7,7 +7,7 @@
 Per system and per hop it reports what the adapters assume: the role split (null parent id =
 parent; empty strings must be 0), children carrying no cross-system reference, resolution rates
 per hop, cardinality (one B parent per A, one C parent per B child), children per parent,
-CumQty monotonicity, LeavesQty <= OrderQty - CumQty, EventTs presence and offset from RecvTs,
+CumQty monotonicity, LeavesQty <= OrderQty - CumQty, TransactTime presence and offset from RecvTs,
 parent-before-child arrival share, cross-system lag percentiles, and each topic's longest
 silence. The cutover rules are in docs/design/09 section 6.
 """
@@ -36,7 +36,7 @@ def _pct(values: List[int], p: float) -> Optional[float]:
     return values[k] / SEC
 
 
-def analyze(rows_by_system: Mapping[str, List[Row]], parent_col: str = "ParentOrderId") -> Dict[str, Any]:
+def analyze(rows_by_system: Mapping[str, List[Row]], parent_col: str = "ParentOrderID") -> Dict[str, Any]:
     report: Dict[str, Any] = {"systems": {}, "hops": {}, "topics": {}, "verdicts": []}
     last: Dict[str, Dict[str, Row]] = {}
     for system in config.SYSTEMS:
@@ -44,8 +44,8 @@ def analyze(rows_by_system: Mapping[str, List[Row]], parent_col: str = "ParentOr
         states: Dict[str, Row] = {}
         history: Dict[str, List[Row]] = defaultdict(list)
         for r in rows:
-            states[r["OrderId"]] = r
-            history[r["OrderId"]].append(r)
+            states[r["OrderID"]] = r
+            history[r["OrderID"]].append(r)
         last[system] = states
         parents = [r for r in states.values() if r.get(parent_col) is None]
         children = [r for r in states.values() if r.get(parent_col) is not None]
@@ -58,9 +58,9 @@ def analyze(rows_by_system: Mapping[str, List[Row]], parent_col: str = "ParentOr
                 non_monotonic += 1
         leaves_bad = sum(1 for r in states.values()
                          if (r.get("LeavesQty") or 0) > max((r.get("OrderQty") or 0) - (r.get("CumQty") or 0), 0)
-                         and r.get("OrdStatus") != "CANCELED")
-        event_missing = sum(1 for r in rows if r.get("EventTs") is None)
-        offsets = [abs(r["RecvTs"] - r["EventTs"]) for r in rows if r.get("EventTs") is not None]
+                         and r.get("OrdStatus") != "4")
+        event_missing = sum(1 for r in rows if r.get("TransactTime") is None)
+        offsets = [abs(r["RecvTs"] - r["TransactTime"]) for r in rows if r.get("TransactTime") is not None]
         report["systems"][system] = {
             "messages": len(rows), "orders": len(states), "parents": len(parents), "children": len(children),
             "messages_per_order_median": statistics.median([len(h) for h in history.values()]) if history else 0,
@@ -76,7 +76,7 @@ def analyze(rows_by_system: Mapping[str, List[Row]], parent_col: str = "ParentOr
         if children_with_upstream:
             report["verdicts"].append(f"{system}: {children_with_upstream} child rows carry UpstreamRef (contract: children carry {parent_col} only)")
         if event_missing:
-            report["verdicts"].append(f"{system}: {event_missing} messages without EventTs (OMS_TRACE_AGE_CLOCK=event would fall back to RecvTs)")
+            report["verdicts"].append(f"{system}: {event_missing} messages without TransactTime (OMS_TRACE_AGE_CLOCK=event would fall back to RecvTs)")
 
     def nodes(level: str) -> Dict[str, Row]:
         system = config.LEVEL_SYSTEM[level]

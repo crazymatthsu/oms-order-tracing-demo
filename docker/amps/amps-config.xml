@@ -2,7 +2,7 @@
 <!--
   A local AMPS broker for the OMS order tracing demo (docs/design/11): the ten SOW topics of the
   mock book (oms_trace.mockdata.TOPICS plus the stale and catch-up channels), each holding the
-  latest state per order as a JSON body keyed on /OrderId.
+  latest state per order as a FIX 4.2 execution report keyed on tag 37 (/37, OrderID).
 
   Started by docker/docker-compose.amps.yml under the `broker` profile with the image AMPS_IMAGE
   of repos.env (there is no public AMPS image; build one from your 60East distribution). Load it
@@ -10,8 +10,9 @@
 
     bash scripts/run_demo.sh publish-amps
 
-  The message type comes from the client URI (tcp://amps:9007/amps/json) and must agree with
-  each topic's MessageType. Relative paths resolve under /amps/data, a named volume (`down -v`
+  The message type comes from the client URI (tcp://amps:9007/amps/fix) and must agree with
+  each topic's MessageType; the firm's link tags are configuration (OMS_AMPS_TAG_MAP_<X>), the
+  broker does not care which tags a body carries. Relative paths resolve under /amps/data, a named volume (`down -v`
   wipes the SOW files). XML comments must not contain two hyphens in a row: AMPS refuses the file.
 
   * A SOW topic keeps one record per key, so a new state of an order replaces the old one, and
@@ -52,7 +53,7 @@
     <JournalDirectory>./journal/</JournalDirectory>
     <Topic>
       <Name>oms\..*</Name>
-      <MessageType>json</MessageType>
+      <MessageType>fix</MessageType>
     </Topic>
   </TransactionLog>
 
@@ -60,62 +61,62 @@
   <SOW>
     <Topic>
       <Name>oms.a.t1</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.a.t1.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.a.t2</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.a.t2.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.b.t1</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.b.t1.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.b.t2</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.b.t2.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.b.t3</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.b.t3.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.b.catchup</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.b.catchup.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.c.t1</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.c.t1.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.c.t2</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.c.t2.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.c.t3</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.c.t3.sow</FileName>
     </Topic>
     <Topic>
       <Name>oms.c.stale</Name>
-      <MessageType>json</MessageType>
-      <Key>/OrderId</Key>
+      <MessageType>fix</MessageType>
+      <Key>/37</Key>
       <FileName>./sow/oms.c.stale.sow</FileName>
     </Topic>
   </SOW>

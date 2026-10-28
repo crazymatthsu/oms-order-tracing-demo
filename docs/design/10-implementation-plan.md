@@ -94,7 +94,7 @@ adapter views plus the PQ packaging. Nothing in its table logic is Community-spe
 
 | # | Task | Size | Milestone |
 |---|---|---|---|
-| 1 | `config`, `adapters` (five levels, role split on `ParentOrderId`), `sources(mock)`, `mockdata` scenario catalog (start from doc 14's five-level mock book) | M | M1 |
+| 1 | `config`, `adapters` (five levels, role split on `ParentOrderID`), `sources(mock)`, `mockdata` scenario catalog (start from doc 14's five-level mock book) | M | M1 |
 | 2 | `reference.py` oracle + L1 tests for every scenario and the identities | M | M1 |
 | 3 | `dag.py` production edge DAG + L2 equality tests + live healing tests | L | M1 |
 | 4 | Community compose, `app.py`, file/kafka sources, `run_demo.sh` | M | M1 |

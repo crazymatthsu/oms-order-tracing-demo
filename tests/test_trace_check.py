@@ -8,7 +8,7 @@ from oms_trace.files import rows_from_dir
 def test_analyze_flags_the_deliberate_violations(book):
     report = trace_check.analyze(book.rows)
     verdicts = "\n".join(report["verdicts"])
-    assert "empty-string ParentOrderId" in verdicts          # scenario EP
+    assert "empty-string ParentOrderID" in verdicts          # scenario EP
     assert "A-Bp: 1 parents have more than one child" in verdicts  # scenario TB
     assert "Cli-Dest: 1 parents have more than one child" in verdicts  # scenario DD
     assert report["systems"]["A"]["parents"] + 1 == report["systems"]["A"]["children"]  # AM, DM and DD net to one
@@ -38,7 +38,7 @@ def test_export_and_reload_round_trip(tmp_path, book):
         assert set(reloaded[system][0]) == set(config.RAW_COLUMN_NAMES)
     with open(os.path.join(tmp_path, "orders_a.jsonl"), encoding="utf-8") as fh:
         first = json.loads(fh.readline())
-    assert first["OrderId"] == book.rows["A"][0]["OrderId"]
+    assert first["OrderID"] == book.rows["A"][0]["OrderID"]
 
 
 def test_cli_exit_code_reflects_verdicts(capsys):

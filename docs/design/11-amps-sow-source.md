@@ -96,17 +96,26 @@ duration of the snapshot either way (§4.2).
 ### 4.4 Topics and keys
 
 - One SOW topic per drop-copy channel, as with Kafka (Q6): `OMS_AMPS_TOPICS_<X>` lists them per
-  system (falling back to `OMS_TOPICS_<X>`). Each topic is keyed on the order id
-  (`<Key>/OrderId</Key>`), so a record **is** an order's latest state. `send_keys` makes AMPS
-  send its `SowKey` header with every message; the source uses it to match an `oof` to the
-  record it saw, and the body's `OrderId` is the identity.
-- Body formats: `json` (field names per the raw contract, remappable with `OMS_AMPS_FIELD_MAP`)
-  or `fix` (tag=value bodies with a tag map, defaults: 37 → `OrderId`, 5011 → `ParentOrderId` (A's destination order naming its client order, M4), 55 → `Symbol`, 54 →
-  `Side`, 38 → `OrderQty`, 14 → `CumQty`, 151 → `LeavesQty`, 6 → `AvgPx`, 39 → `OrdStatus`,
-  60 → `EventTs`; the cross-system and in-system parent tags are firm-specific and **must** be
-  configured).
+  system (falling back to `OMS_TOPICS_<X>`). Each topic is keyed on the order id, tag 37
+  (`<Key>/37</Key>` for the `fix` message type), so a record **is** an order's latest state.
+  `send_keys` makes AMPS send its `SowKey` header with every message; the source uses it to match
+  an `oof` to the record it saw, and the body's `OrderID` is the identity.
+- **Bodies are FIX 4.2 execution reports** (`OMS_AMPS_FORMAT=fix`, the default; D18 in §5.2). The
+  standard tags feed the raw columns of the same name in every system without configuration
+  (`config.FIX42_TAGS`: 37 `OrderID`, 11 `ClOrdID`, 41 `OrigClOrdID`, 55 `Symbol`, 54 `Side`,
+  38 `OrderQty`, 14 `CumQty`, 151 `LeavesQty`, 6 `AvgPx`, 39 `OrdStatus`, 150 `ExecType`, 35
+  `MsgType`, 60 `TransactTime`, 34 `MsgSeqNum`, 75 `Date`). The two link columns are the firm's
+  own tags and differ per system: `OMS_AMPS_TAG_MAP_<X>` (`tag=Column,...`) names them — A's
+  destination order names its client order in 5011 by default (M4); B's `UpstreamRef` (the A
+  destination id) and `ParentOrderID`, and C's, **must** be configured, and the settings refuse
+  to load for a system that has topics but no tag for one of its link columns. `OMS_AMPS_TAG_MAP`
+  applies to every system first (e.g. to re-point a standard tag); a system's own entry wins
+  tag by tag, and a tag feeds one column. Header and trailer tags are ignored, the checksum is
+  not verified, codes (`Side`, `OrdStatus`, `ExecType`) pass through untranslated (Q13).
+- `json` bodies remain available (`OMS_AMPS_FORMAT=json`, field names per the raw contract,
+  remappable with `OMS_AMPS_FIELD_MAP`) for a producer that is not FIX.
 - `RecvTs` is stamped on arrival; `Topic` is the SOW topic; `KafkaPartition` / `KafkaOffset`
-  are null (the AMPS bookmark is not carried).
+  are null (the AMPS bookmark is carried in `Bookmark` on the in-worker tables, not persisted).
 
 ### 4.5 Heartbeats (operational rule)
 
@@ -166,13 +175,38 @@ instead (`OMS_AMPS_MODE=bookmark`, the default in `queries/oms_trace/ingest_amps
 The lineage PQ's own in-worker source keeps `sow_and_subscribe` (`OMS_AMPS_MODE=sow`): there the
 re-snapshot is wanted. One topic, two subscription styles, two jobs.
 
+### 5.2 Decision D18: FIX 4.2 field names in the raw tables, link tags configured per system
+
+The drop copies on AMPS are FIX 4.2 execution reports, not JSON. Three choices follow:
+
+1. **The raw tables use the standard FIX field names** for what a message carries (`OrderID`,
+   `ClOrdID`, `TransactTime`, `MsgSeqNum`, ...; doc 03 §2 lists tag and name side by side), so a
+   desk reading `OMS_RAW.OrdersB` sees the message it knows, and the DIS schema, the Kafka value
+   spec and the parser's standard tag map are one definition (`config.RAW_COLUMNS`,
+   `config.FIX42_TAGS`). The lineage's canonical columns (doc 03 §3) keep their own names
+   (`OrderId`, `LinkId`, `Status`): they are the model, not the wire.
+2. **The two link columns stay ours** (`UpstreamRef`, `ParentOrderID`): FIX 4.2 has no standard
+   field for a parent or an upstream order, every firm uses its own tags, and the tags differ
+   between the three systems. They are configuration per system (`OMS_AMPS_TAG_MAP_{A,B,C}`),
+   validated at start-up, printed in the source's log line and carried by the mock publisher
+   (`oms_trace.amps_publish`) so the demo's two ends agree without code changes.
+3. **Codes are not translated.** `Side`, `OrdStatus` and `ExecType` hold the FIX codes; the
+   lineage compares them for equality only, and a display mapping belongs in the UI if the desks
+   want one (open, §6).
+
+`json` stays as a second format for a non-FIX producer; the broker configuration, the URI's
+message type and `OMS_AMPS_FORMAT` must agree.
+
 ## 6. What stays open
 
 - The AMPS client library (`amps-python-client`) must be in the worker's Python environment:
   an addition to the release's frozen-requirements file or a custom worker image
   (`docker/deephaven-amps.Dockerfile` is the Community analogue the demo overlay builds).
-- The body format and the parent/upstream tags of the real topics (Q15/Q16 answered the
-  columns; the AMPS tags that carry them are to be read off a sample with `trace_check`).
+- The parent/upstream tags of the real topics per system (Q15/Q16 answered the columns; the tags
+  that carry them are to be read off a sample and put in `OMS_AMPS_TAG_MAP_{A,B,C}`), and
+  whether any system keys its orders on `ClOrdID` (11) rather than `OrderID` (37) — a one-entry
+  re-point of the standard map for that system.
+- A display mapping for the FIX codes in `Side` / `OrdStatus` on the dashboard (D18).
 - SOW expiry policy per topic: how long a filled or canceled order stays in the SOW decides how
   far back the lineage can see without the DIS.
 - The DTW options (`transactionsEnabled`, `sequenceColumn`, chunking) on the installed release.
@@ -184,7 +218,9 @@ re-snapshot is wanted. One topic, two subscription styles, two jobs.
 - Pure python (`tests/test_amps_sow.py`): the SOW fold (`amps_sow.TopicMirror`) on message
   doubles and on real `AMPS.Message` objects — snapshot, publish, `delta_publish`, `oof`,
   `sow_delete`, a reconnect snapshot dropping what was not re-sent, the `SowDeleted` policy,
-  rejects, both body formats, the field and tag maps, the settings, the stub-client wiring.
+  rejects, FIX 4.2 and JSON bodies (whole execution reports with header and trailer, the
+  standard and per-system tag maps, the link-tag validation, the publisher's encoding round
+  trip and checksum), the settings, the stub-client wiring.
 - Embedded engine (`tests/test_dag_embedded.py`): the source's blink tables feed
   `dag.build_lineage` and the lineage equals the oracle on the scenario book delivered as SOW
   messages; a late B child published to the SOW heals its C parent; a disconnect turns the

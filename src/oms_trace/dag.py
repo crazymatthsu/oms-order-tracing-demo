@@ -85,11 +85,11 @@ def canonical_formulas(level: str, settings: Settings) -> list:
     """The adapter view of docs/design/03 section 3 for one level."""
     link_col = LEVEL_LINK_COLUMN.get(level)
     link = "``" if link_col is None else f"isNull({link_col}) ? `` : {link_col}"
-    age = "isNull(EventTs) ? RecvTs : EventTs" if settings.age_clock == "event" else "RecvTs"
+    age = "isNull(TransactTime) ? RecvTs : TransactTime" if settings.age_clock == "event" else "RecvTs"
     return [
         f"Level = `{level}`",
         f"System = `{LEVEL_SYSTEM[level]}`",
-        "OrderId",
+        "OrderId = OrderID",
         f"LinkId = {link}",
         "Symbol = isNull(Symbol) ? `` : Symbol",
         "Side = isNull(Side) ? `` : Side",
@@ -159,7 +159,7 @@ def _topic_health(raw_window: Table, system: str, clock: Table, settings: Settin
     topic STALE, a replaying snapshot CATCHING_UP; otherwise the event-time rule of doc 04 §5.
     """
     health = (
-        raw_window.agg_by([agg.max_(["LastRecvTs = RecvTs", "LastEventTs = EventTs"])], by=["Topic"])
+        raw_window.agg_by([agg.max_(["LastRecvTs = RecvTs", "LastEventTs = TransactTime"])], by=["Topic"])
         .update_view([f"System = `{system}`", "Topic = isNull(Topic) ? `` : Topic"])
         .natural_join(clock, on=[], joins=["Now"])
     )
@@ -212,7 +212,7 @@ def build_lineage(raw: Mapping[str, Table], settings: Settings, clock: Optional[
     clock = live_clock(settings) if clock is None else clock
     window = {s: raw[s].where(_dates_filter(settings)) for s in config.SYSTEMS}
     pid = settings.parent_id_column
-    last = {s: window[s].last_by(["OrderId"]) for s in config.SYSTEMS}
+    last = {s: window[s].last_by(["OrderID"]) for s in config.SYSTEMS}
 
     # system A: the client-side order (the root) and the destination-side order (tag 5011 names the client order)
     a_root = last["A"].where(f"isNull({pid})").view(canonical_formulas("A_ROOT", settings)).update_view(

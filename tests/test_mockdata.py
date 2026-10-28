@@ -18,7 +18,7 @@ def test_ids_unique_within_a_system_except_deliberate_restatements(book):
     for system in config.SYSTEMS:
         seen = {}
         for row in book.rows[system]:
-            seen.setdefault(row["OrderId"], []).append(row)
+            seen.setdefault(row["OrderID"], []).append(row)
         multi = {k: v for k, v in seen.items() if len(v) > 1}
         # only the duplicate-delivery and out-of-order scenarios restate an order
         assert set(multi) <= {book.scenarios["DUP"].ids["Cc1a"], book.scenarios["OOO"].ids["Cc2a"]}, multi.keys()

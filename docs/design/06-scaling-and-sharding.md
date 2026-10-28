@@ -59,7 +59,7 @@ not built, until a gate trips.
 ### 1.4 Levers before sharding
 
 1. ~~Numeric ids~~ — ruled out: the ids are alphanumeric (Q19), and a numeric surrogate assigned
-   at ingest would have to be assigned to the *references* too (`UpstreamRef`, `ParentOrderId`),
+   at ingest would have to be assigned to the *references* too (`UpstreamRef`, `ParentOrderID`),
    which needs a lookup of the parent's surrogate before a child can be written — the
    mapping-table problem the review removed (doc 00 F2/F3). Strings it is; the heap is bought,
    not engineered away.
@@ -142,9 +142,9 @@ knows its shard from its own columns:
 | Family | Edge | Shard key | Parent rows routed by | Child rows routed by | Root of the parent |
 |---|---|---|---|---|---|
 | F1 | `A-Bp` | `hash(A.OrderId)` | `OrderId` | `UpstreamRef` (the A id) | its own id |
-| F2 | `Bp-Bc` | `hash(Bp.OrderId)` | `OrderId` | `ParentOrderId` | `UpstreamRef` (the A id): **local** |
+| F2 | `Bp-Bc` | `hash(Bp.OrderId)` | `OrderId` | `ParentOrderID` | `UpstreamRef` (the A id): **local** |
 | F3 | `Bc-Cp` | `hash(Bc.OrderId)` | `OrderId` | `UpstreamRef` (the B child id) | not local: comes from F2 |
-| F4 | `Cp-Cc` | `hash(Cp.OrderId)` | `OrderId` | `ParentOrderId` | not local: comes from F3 |
+| F4 | `Cp-Cc` | `hash(Cp.OrderId)` | `OrderId` | `ParentOrderID` | not local: comes from F3 |
 
 Reconciliation is local in every family. What is **not** local is the root of F3's and F4's
 parents, which is needed only for attribution to the A order (`drift_by_a_order`) and the UI.

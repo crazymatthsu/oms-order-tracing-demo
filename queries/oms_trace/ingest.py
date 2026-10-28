@@ -37,10 +37,11 @@ kafka_props = {
 dis = get_dis_by_name(f"oms_ingest_{SYSTEM.lower()}")  # noqa: F821 - resolved in the worker; private storage, claims OMS_RAW.Orders<X>
 for topic in TOPICS:
     opts = enterprise.ingester_options(settings, SYSTEM, topic, kafka_props, one_table=settings.one_table_per_system)
+    # the raw contract minus what the ingester stamps (config.RAW_COLUMNS: FIX 4.2 field names, the link
+    # columns, Date from RecvTs); the JSON producer names its fields the same way
     value_def = TableDefinition({  # noqa: F821
-        "OrderId": dt.string, "UpstreamRef": dt.string, "ParentOrderId": dt.string, "Symbol": dt.string, "Side": dt.string,  # noqa: F821
-        "OrderQty": dt.long, "CumQty": dt.long, "LeavesQty": dt.long, "AvgPx": dt.double, "OrdStatus": dt.string,  # noqa: F821
-        "EventTs": dt.Instant, "SeqNo": dt.long,  # noqa: F821
+        name: {"String": dt.string, "long": dt.long, "int": dt.int32, "double": dt.double, "Instant": dt.Instant, "boolean": dt.bool_}[kind]  # noqa: F821
+        for name, kind in config.RAW_COLUMNS if name not in config.INGESTER_COLUMNS and name != "Date"
     })
     writer_opts = kafka_table_writer_options(  # noqa: F821
         dis_name=opts["dis_name"],

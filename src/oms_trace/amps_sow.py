@@ -6,7 +6,7 @@ One ``HAClient`` over every URI in ``OMS_AMPS_URI`` runs one ``sow_and_subscribe
 contract of docs/design/03 section 2 plus ``SowStream`` (``snapshot`` | ``change``) and
 ``SowEpoch``, so that
 
-* the lineage DAG reads ``last_by(OrderId)`` over the blink table exactly as it reads a DIS
+* the lineage DAG reads ``last_by(OrderID)`` over the blink table exactly as it reads a DIS
   table (``OMS_TRACE_SOURCE=amps``, :func:`oms_trace.app.build`; aggregations over a blink
   table see its whole history), and
 * the Derived Table Writer PQ (``queries/oms_trace/ingest_amps.py``) persists the ``change``
@@ -53,6 +53,12 @@ Two subscription modes (``OMS_AMPS_MODE``, docs/design/11 section 5):
   been published to the blink table, so the Derived Table Writer sees each message once, with
   the small at-least-once window between publish and discard. Right for the persistence path.
 
+Bodies are FIX 4.2 by default (``OMS_AMPS_FORMAT=fix``, docs/design/11 section 4.4, decision D18):
+the standard tags (``config.FIX42_TAGS``: 37 ``OrderID``, 11 ``ClOrdID``, 55, 54, 38, 14, 151, 6, 39,
+150, 35, 60 ``TransactTime``, 34 ``MsgSeqNum``, 75 ``Date``) feed the raw columns of the same name in
+every system, and each system's two link columns come from the firm's own tags, configured with
+``OMS_AMPS_TAG_MAP_<X>`` (``tag=Column,...``). ``json`` bodies name the raw columns directly.
+
 Nothing at module scope imports ``deephaven`` or ``AMPS`` (``pip install amps-python-client``,
 the ``amps`` extra): the settings, the body parsers and the fold are unit-tested on a bare
 python with a stub client (``tests/test_amps_sow.py``).
@@ -87,6 +93,7 @@ HEARTBEAT_ENV = "OMS_AMPS_HEARTBEAT_SEC"
 FORMAT_ENV = "OMS_AMPS_FORMAT"
 FIELD_MAP_ENV = "OMS_AMPS_FIELD_MAP"
 TAG_MAP_ENV = "OMS_AMPS_TAG_MAP"
+TAG_MAP_SYSTEM_ENV = "OMS_AMPS_TAG_MAP_{system}"
 BATCH_SIZE_ENV = "OMS_AMPS_BATCH_SIZE"
 TIMEOUT_ENV = "OMS_AMPS_TIMEOUT_MS"
 MAX_PENDING_ENV = "OMS_AMPS_MAX_PENDING"
@@ -117,13 +124,14 @@ DEFAULT_TIMEOUT_MS = 10_000
 DEFAULT_MAX_PENDING = 250_000
 #: ``oof``: deletes and expiries arrive as ``oof``; ``send_keys``: every message carries its SowKey.
 SUBSCRIBE_OPTIONS = "oof,send_keys"
-#: FIX tag -> raw column, for ``OMS_AMPS_FORMAT=fix`` (docs/design/11 section 4.4). Tag 5011 is system A's
-#: in-system parent id (a destination order names its client order); B's and C's parent and upstream
-#: tags are firm-specific and come from ``OMS_AMPS_TAG_MAP``.
-DEFAULT_TAG_MAP: Mapping[str, str] = {
-    "37": "OrderId", "55": "Symbol", "54": "Side", "38": "OrderQty", "14": "CumQty", "151": "LeavesQty",
-    "6": "AvgPx", "39": "OrdStatus", "60": "EventTs", "34": "SeqNo", "5011": "ParentOrderId",
-}
+#: FIX tag -> raw column for ``OMS_AMPS_FORMAT=fix`` (docs/design/11 section 4.4, decision D18): the standard
+#: FIX 4.2 tags of ``config.FIX42_TAGS`` feed the columns of the same name in every system. The two link
+#: columns are the firm's own tags and differ per system: ``OMS_AMPS_TAG_MAP_<X>`` (``tag=Column,...``)
+#: names them; ``OMS_AMPS_TAG_MAP`` applies to every system first. A system with topics must have every
+#: link column of ``config.LINK_COLUMNS_BY_SYSTEM`` mapped, or the settings refuse to load.
+DEFAULT_TAG_MAP: Mapping[str, str] = dict(config.FIX42_TAGS)
+#: System A's destination order names its client order in tag 5011 (M4); B and C have no default.
+DEFAULT_SYSTEM_TAG_MAPS: Mapping[str, Mapping[str, str]] = {"A": {"5011": "ParentOrderID"}, "B": {}, "C": {}}
 #: A status row per topic at most this often outside snapshot boundaries.
 STATUS_INTERVAL_NS = config.SECOND_NANOS
 
@@ -164,7 +172,7 @@ def _bool_env(env: Mapping[str, str], key: str, default: bool) -> bool:
 
 
 def _map_env(env: Mapping[str, str], key: str) -> Dict[str, str]:
-    """``a=OrderId,b=Symbol`` -> dict; every target must be a raw column the body may carry."""
+    """``a=OrderID,b=Symbol`` -> dict; every target must be a raw column the body may carry."""
     out: Dict[str, str] = {}
     for part in re.split(r"[\s,]+", env.get(key, "").strip()):
         if not part:
@@ -188,9 +196,10 @@ class AmpsSettings:
     topics: Mapping[str, Tuple[str, ...]]
     client_name: str = DEFAULT_CLIENT_NAME
     heartbeat_sec: int = DEFAULT_HEARTBEAT_SEC
-    body_format: str = "json"  # json | fix
+    body_format: str = "fix"  # fix | json
     field_map: Mapping[str, str] = None  # type: ignore[assignment]  # json field -> raw column
-    tag_map: Mapping[str, str] = None  # type: ignore[assignment]  # FIX tag -> raw column
+    tag_map: Mapping[str, str] = None  # type: ignore[assignment]  # FIX tag -> raw column, every system
+    tag_maps: Mapping[str, Mapping[str, str]] = None  # type: ignore[assignment]  # system -> its complete tag map
     batch_size: int = DEFAULT_BATCH_SIZE
     timeout_ms: int = DEFAULT_TIMEOUT_MS
     max_pending: int = DEFAULT_MAX_PENDING
@@ -205,14 +214,20 @@ class AmpsSettings:
             object.__setattr__(self, "field_map", {})
         if self.tag_map is None:
             object.__setattr__(self, "tag_map", dict(DEFAULT_TAG_MAP))
-        if self.body_format not in ("json", "fix"):
-            raise SettingsError(f"{FORMAT_ENV}={self.body_format!r} must be json or fix")
+        if self.tag_maps is None:
+            object.__setattr__(self, "tag_maps", build_tag_maps(self.tag_map, DEFAULT_SYSTEM_TAG_MAPS))
+        if self.body_format not in ("fix", "json"):
+            raise SettingsError(f"{FORMAT_ENV}={self.body_format!r} must be fix or json")
         if self.mode not in MODES:
             raise SettingsError(f"{MODE_ENV}={self.mode!r} must be one of {MODES}")
         if self.bookmark_first not in BOOKMARK_FIRSTS:
             raise SettingsError(f"{BOOKMARK_FIRST_ENV}={self.bookmark_first!r} must be EPOCH or NOW")
         if not any(self.topics.get(s) for s in SYSTEMS):
             raise SettingsError("no AMPS topics: set " + ", ".join(TOPICS_ENV.format(system=s) for s in SYSTEMS))
+        if self.body_format == "fix":
+            for system in SYSTEMS:
+                if self.topics.get(system):
+                    check_link_tags(system, self.tag_map_for(system))
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None, settings: Optional[Settings] = None) -> "AmpsSettings":
@@ -221,22 +236,22 @@ class AmpsSettings:
         settings = settings or config.load_settings(env)
         uris = tuple(u for u in re.split(r"[\s,]+", env.get(URI_ENV, "").strip()) if u)
         if not uris:
-            raise SettingsError(f"{URI_ENV}: at least one AMPS URI is required, e.g. tcp://amps-host:9007/amps/json")
+            raise SettingsError(f"{URI_ENV}: at least one AMPS URI is required, e.g. tcp://amps-host:9007/amps/fix")
         topics: Dict[str, Tuple[str, ...]] = {}
         for system in SYSTEMS:
             raw = env.get(TOPICS_ENV.format(system=system), "")
             listed = tuple(t.strip() for t in raw.split(",") if t.strip())
             topics[system] = listed or tuple(settings.topics.get(system, ()))
-        tag_map = dict(DEFAULT_TAG_MAP)
-        tag_map.update(_map_env(env, TAG_MAP_ENV))
+        tag_map, tag_maps = tag_maps_from_env(env)
         return cls(
             uris=uris,
             topics=topics,
             client_name=env.get(CLIENT_NAME_ENV, "").strip() or DEFAULT_CLIENT_NAME,
             heartbeat_sec=_int_env(env, HEARTBEAT_ENV, DEFAULT_HEARTBEAT_SEC, 0),
-            body_format=env.get(FORMAT_ENV, "").strip() or "json",
+            body_format=env.get(FORMAT_ENV, "").strip().lower() or "fix",
             field_map=_map_env(env, FIELD_MAP_ENV),
             tag_map=tag_map,
+            tag_maps=tag_maps,
             batch_size=_int_env(env, BATCH_SIZE_ENV, DEFAULT_BATCH_SIZE, 1),
             timeout_ms=_int_env(env, TIMEOUT_ENV, DEFAULT_TIMEOUT_MS, 0),
             max_pending=_int_env(env, MAX_PENDING_ENV, DEFAULT_MAX_PENDING, 1),
@@ -265,12 +280,65 @@ class AmpsSettings:
         """``(system, topic)`` for every configured topic, in system order."""
         return [(s, t) for s in SYSTEMS for t in self.topics.get(s, ())]
 
+    def tag_map_for(self, system: str) -> Mapping[str, str]:
+        """The complete FIX tag -> raw column map of one system (standard tags, then the system's own)."""
+        return self.tag_maps.get(system) or dict(self.tag_map)
+
+    def link_tags(self, system: str) -> Dict[str, str]:
+        """``{link column: tag}`` for one system, e.g. ``{"ParentOrderID": "5011"}``."""
+        return {column: tag for tag, column in self.tag_map_for(system).items()
+                if column in config.LINK_COLUMNS_BY_SYSTEM.get(system, ())}
+
     def describe(self) -> str:
         """For the log: the URIs with any password masked."""
         uris = ", ".join(_CREDENTIALS.sub(r"\1:****@", u) for u in self.uris)
         heartbeat = f"heartbeat {self.heartbeat_sec} s" if self.heartbeat_sec else "no heartbeat"
         mode = "sow_and_subscribe" if self.mode == "sow" else f"bookmark subscribe, store {self.bookmark_store_path}"
-        return f"{uris} as {self.client_name} ({mode}; {self.body_format} bodies, batch {self.batch_size}, {heartbeat})"
+        bodies = self.body_format + " bodies"
+        if self.body_format == "fix":
+            links = "; ".join(f"{s}: " + ", ".join(f"{c}<-{t}" for c, t in sorted(self.link_tags(s).items()))
+                              for s in SYSTEMS if self.topics.get(s))
+            bodies = f"FIX 4.2 bodies, link tags {links}"
+        return f"{uris} as {self.client_name} ({mode}; {bodies}, batch {self.batch_size}, {heartbeat})"
+
+
+def tag_maps_from_env(env: Mapping[str, str]) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+    """``(common, per system)`` tag maps from ``OMS_AMPS_TAG_MAP`` and ``OMS_AMPS_TAG_MAP_<X>`` over the
+    defaults; the publisher reads the same keys so the demo's two ends agree."""
+    common = dict(DEFAULT_TAG_MAP)
+    common.update(_map_env(env, TAG_MAP_ENV))
+    per_system = {s: dict(DEFAULT_SYSTEM_TAG_MAPS.get(s, {})) for s in SYSTEMS}
+    for system in SYSTEMS:
+        per_system[system].update(_map_env(env, TAG_MAP_SYSTEM_ENV.format(system=system)))
+    return common, build_tag_maps(common, per_system)
+
+
+def format_fix_time(nanos: int) -> str:
+    """Epoch nanoseconds as a FIX UTCTimestamp with milliseconds (tag 60 / 52), the inverse of :func:`to_nanos`."""
+    seconds, rem = divmod(nanos, config.SECOND_NANOS)
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y%m%d-%H:%M:%S") + f".{rem // 1_000_000:03d}"
+
+
+def build_tag_maps(common: Mapping[str, str], per_system: Mapping[str, Mapping[str, str]]) -> Dict[str, Dict[str, str]]:
+    """One complete tag map per system: the common map (standard tags and ``OMS_AMPS_TAG_MAP``) under
+    the system's own entries (``OMS_AMPS_TAG_MAP_<X>``). A tag feeds one column; the system's entry wins."""
+    out: Dict[str, Dict[str, str]] = {}
+    for system in SYSTEMS:
+        merged = dict(common)
+        merged.update(per_system.get(system, {}))
+        out[system] = merged
+    return out
+
+
+def check_link_tags(system: str, tag_map: Mapping[str, str]) -> None:
+    """Every link column of ``system`` has a tag, and ``OrderID`` does; else name the key to set."""
+    columns = set(tag_map.values())
+    required = ("OrderID",) + tuple(config.LINK_COLUMNS_BY_SYSTEM.get(system, ()))
+    missing = [c for c in required if c not in columns]
+    if missing:
+        key = TAG_MAP_SYSTEM_ENV.format(system=system)
+        example = ",".join(f"<tag>={c}" for c in missing)
+        raise SettingsError(f"{key}: no FIX tag feeds {', '.join(missing)} for system {system}; set {key}={example}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -319,7 +387,10 @@ def coerce(column: str, value: Any) -> Any:
     if value is None:
         return None
     if kind == "String":
-        return _text(value)  # an empty string stays empty: the contract violation trace_check flags
+        text = _text(value)  # an empty string stays empty: the contract violation trace_check flags
+        if column == "Date" and len(text) == 8 and text.isdigit():
+            return f"{text[:4]}-{text[4:6]}-{text[6:]}"  # FIX tag 75 TradeDate is YYYYMMDD
+        return text
     if kind in ("long", "int"):
         if isinstance(value, bool):
             raise ValueError(f"{column}={value!r} is not a number")
@@ -365,7 +436,12 @@ def parse_json(body: str, field_map: Mapping[str, str]) -> Dict[str, Any]:
 
 
 def parse_fix(body: str, tag_map: Mapping[str, str]) -> Dict[str, Any]:
-    """A ``tag=value`` body (SOH or ``|`` delimited) -> ``{raw column: value}`` through the tag map."""
+    """A FIX ``tag=value`` body (SOH or ``|`` delimited) -> ``{raw column: value}`` through the tag map.
+
+    Header and trailer tags (8, 9, 10, 49, 56, 52, ...) and every tag the map does not name are
+    ignored; the checksum is not verified (AMPS delivered the message intact). When two tags feed
+    one column the later one in the message wins.
+    """
     out: Dict[str, Any] = {}
     for part in re.split("[\x01|]", body):
         if not part.strip():
@@ -379,9 +455,11 @@ def parse_fix(body: str, tag_map: Mapping[str, str]) -> Dict[str, Any]:
     return out
 
 
-def make_parser(amps: AmpsSettings) -> Callable[[str], Dict[str, Any]]:
+def make_parser(amps: AmpsSettings, system: Optional[str] = None) -> Callable[[str], Dict[str, Any]]:
+    """The body parser of one system: its FIX tag map, or the JSON field map (the same for every system)."""
     if amps.body_format == "fix":
-        return lambda body: parse_fix(body, amps.tag_map)
+        tag_map = amps.tag_map_for(system) if system else dict(amps.tag_map)
+        return lambda body: parse_fix(body, tag_map)
     return lambda body: parse_json(body, amps.field_map)
 
 
@@ -393,8 +471,8 @@ def raw_row(system: str, topic: str, fields: Mapping[str, Any], recv_ns: int, tz
         row.update({name: base.get(name) for name in RAW_COLUMN_NAMES})
     for column, value in fields.items():
         row[column] = coerce(column, value)
-    if not row.get("OrderId"):
-        raise ValueError("the body carries no OrderId")
+    if not row.get("OrderID"):
+        raise ValueError("the body carries no OrderID")
     if not row.get("Date"):
         row["Date"] = datetime.fromtimestamp(recv_ns // config.SECOND_NANOS, tz).date().isoformat()
     row["RecvTs"] = recv_ns
@@ -422,9 +500,9 @@ class TopicMirror:
         self.topic = topic
         self._parse = parser
         self._tz = tz
-        #: OrderId -> last known raw row (deleted ones stay, flagged).
+        #: OrderID -> last known raw row (deleted ones stay, flagged).
         self.records: Dict[str, Row] = {}
-        self._keys: Dict[str, str] = {}  # AMPS SowKey -> OrderId
+        self._keys: Dict[str, str] = {}  # AMPS SowKey -> OrderID
         self._seen: set = set()  # OrderIds (re-)sent in the current snapshot
         self.epoch = 0
         self.in_snapshot = False
@@ -458,7 +536,7 @@ class TopicMirror:
             fields = self._parse(_text(message.get_data()))
             base = None
             if command == "delta_publish":
-                order_id = coerce("OrderId", fields.get("OrderId")) or self._keys.get(sow_key)
+                order_id = coerce("OrderID", fields.get("OrderID")) or self._keys.get(sow_key)
                 base = self.records.get(order_id or "")
                 if base is not None and base.get("SowDeleted"):
                     base = dict(base, SowDeleted=None)
@@ -467,7 +545,7 @@ class TopicMirror:
             self.counts["rejected"] += 1
             self.last_error = f"{command}: {type(exc).__name__}: {exc}"
             return []
-        order_id = row["OrderId"]
+        order_id = row["OrderID"]
         self.records[order_id] = row
         if sow_key:
             self._keys[sow_key] = order_id
@@ -483,7 +561,7 @@ class TopicMirror:
         body = _text(message.get_data())
         if order_id is None and body:
             try:
-                order_id = coerce("OrderId", self._parse(body).get("OrderId"))
+                order_id = coerce("OrderID", self._parse(body).get("OrderID"))
             except Exception as exc:  # noqa: BLE001
                 self.counts["rejected"] += 1
                 self.last_error = f"oof: {type(exc).__name__}: {exc}"
@@ -664,10 +742,9 @@ class AmpsSowSource:
         self.discarded = 0
         self._clock = clock
         self._retry_seconds = retry_seconds
-        parser = make_parser(amps)
         tz = ZoneInfo(amps.tz)
         self.mirrors: Dict[Tuple[str, str], TopicMirror] = {
-            (s, t): TopicMirror(s, t, parser, tz) for s, t in amps.subscriptions()}
+            (s, t): TopicMirror(s, t, make_parser(amps, s), tz) for s, t in amps.subscriptions()}
         self.buffers: Dict[str, EventBuffer] = {s: EventBuffer(amps.max_pending) for s in SYSTEMS}
         self.status_buffer = EventBuffer(amps.max_pending)
         self.tables: Dict[str, Any] = {}

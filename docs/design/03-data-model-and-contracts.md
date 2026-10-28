@@ -20,43 +20,60 @@ for in-worker tables.
 
 One row per message as received (append-only within a partition). The same schema for all
 three; `OrdersB` and `OrdersC` hold **both** parent and child orders, told apart by
-`ParentOrderId` (A11, Q15). A system publishes on several topics (Q6, up to 8). The target is
+`ParentOrderID` (A11, Q15). A system publishes on several topics (Q6, up to 8). The target is
 one table per system with each topic's ingester writing its own **internal partition**; if the
 installed release's Kafka ingester cannot do that, the fallback is one table per topic
 (`OrdersB_<topic>`) with the same schema, merged in the adapter (doc 05 §4.3b). Either way the
 `Topic` column records provenance.
 
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `Date` | String (partitioning) | no | trading date the ingester assigned from `RecvTs` (A10) |
-| `OrderId` | String | no | the system's own order id, unique across parents and children (A1) |
-| `UpstreamRef` | String | A: null; B parent: the A id; C parent: the B child id; **children: null** (Q16, confirmed 2026-10-26) | the **cross-system** reference, carried by parents only |
-| `ParentOrderId` | String | parents: **null**; children: the parent's `OrderId` in the same system (Q15, confirmed 2026-10-26) | the **in-system** reference; non-null makes the row a child |
-| `Symbol` | String | no | as sent; one coding across the three systems (Q13) |
-| `Side` | String | no | as sent; one coding across the three systems (Q13) |
-| `OrderQty` | long | no | order quantity |
-| `CumQty` | long | no | cumulative executed quantity — the value reconciled |
-| `LeavesQty` | long | no | open quantity — available in all three systems (Q14); reconciled as `RouteGap` |
-| `AvgPx` | double | yes | optional |
-| `OrdStatus` | String | yes | the system's status |
-| `EventTs` | Instant | yes | the OMS's event time (FIX tag 60, GMT in all three systems and comparable, Q12) |
-| `RecvTs` | Instant | no | the ingester's receive time; used for aging (Q12) |
-| `SeqNo` | long | yes | a per-order sequence from the feed, if any (A8) |
-| `Topic` | String | no | the source topic (Q6: several per system) |
-| `KafkaPartition` | int | no | provenance |
-| `KafkaOffset` | long | no | provenance |
-| `SowDeleted` | Boolean | yes | AMPS SOW source only (doc 11 §4.1): `true` when the record left the SOW; null on Kafka-fed rows |
+Columns a FIX 4.2 execution report carries keep the **standard FIX field name** (the tag in the
+second column; D18 in doc 11 §5.2), whatever transport delivers the message. The two link columns
+are the firm's own tags and have no standard name: which tag feeds them is configured **per
+system** (`OMS_AMPS_TAG_MAP_{A,B,C}`, `tag=Column,...`; A defaults to 5011 → `ParentOrderID`,
+B and C must be set). The remaining columns are the envelope the ingester or the source stamps.
 
-Enterprise schema sketch (one per table; confirm attribute names against the installed
-version's schema reference):
+| Column | Tag | Type | Null | Meaning |
+|---|---|---|---|---|
+| `Date` | 75 | String (partitioning) | no | trading date; TradeDate when the feed carries it (`YYYYMMDD` → ISO), else assigned by the ingester from `RecvTs` (A10) |
+| `OrderID` | 37 | String | no | the system's own order id, unique across parents and children (A1); the row's identity and the SOW key |
+| `ClOrdID` | 11 | String | yes | the client order id as sent; informational |
+| `OrigClOrdID` | 41 | String | yes | on a cancel/replace; informational |
+| `UpstreamRef` | *configured* | String | A: null; B parent: the A destination id; C parent: the B child id; **children: null** (Q16, confirmed 2026-10-26) | the **cross-system** reference, carried by parents only |
+| `ParentOrderID` | *configured* (A: 5011) | String | parents: **null**; children: the parent's `OrderID` in the same system (Q15, confirmed 2026-10-26) | the **in-system** reference; non-null makes the row a child |
+| `Symbol` | 55 | String | no | as sent; one coding across the three systems (Q13) |
+| `Side` | 54 | String | no | the FIX code as sent (`1` buy, `2` sell, `5` sell short, ...), untranslated (Q13) |
+| `OrderQty` | 38 | long | no | order quantity |
+| `CumQty` | 14 | long | no | cumulative executed quantity — the value reconciled |
+| `LeavesQty` | 151 | long | no | open quantity — available in all three systems (Q14); reconciled as `RouteGap` |
+| `AvgPx` | 6 | double | yes | optional |
+| `OrdStatus` | 39 | String | yes | the FIX code as sent (`0` new, `1` partially filled, `2` filled, `4` canceled, `8` rejected, ...), untranslated |
+| `ExecType` | 150 | String | yes | the execution report's type, as sent |
+| `MsgType` | 35 | String | yes | `8` for an execution report; kept so other message types on a topic stay recognisable |
+| `TransactTime` | 60 | Instant | yes | the OMS's event time (GMT in all three systems and comparable, Q12) |
+| `RecvTs` | — | Instant | no | the ingester's receive time; used for aging (Q12) |
+| `MsgSeqNum` | 34 | long | yes | the session sequence number from the feed, if any (A8) |
+| `Topic` | — | String | no | the source topic (Q6: several per system) |
+| `KafkaPartition` | — | int | no | provenance (null on AMPS-fed rows) |
+| `KafkaOffset` | — | long | no | provenance (null on AMPS-fed rows) |
+| `SowDeleted` | — | Boolean | yes | AMPS SOW source only (doc 11 §4.1): `true` when the record left the SOW; null on Kafka-fed rows |
+
+The lineage never interprets `Side`, `OrdStatus` or `ExecType`: they travel to the canonical
+columns (§3) and the UI as the feed sent them, and a mismatch check compares them for equality
+only. `src/oms_trace/config.py` (`RAW_COLUMNS`, `FIX42_TAGS`) is the one definition the schemas,
+the Kafka value spec, the AMPS parser and the mock book are generated from or checked against.
+
+Enterprise schema (`schemas/OMS_RAW.Orders{A,B,C}.schema`, one per table; confirm attribute names
+against the installed version's schema reference):
 
 ```xml
 <Table namespace="OMS_RAW" name="OrdersB" storageType="NestedPartitionedOnDisk" defaultMergeFormat="DeephavenV1">
   <Partitions keyFormula="${autobalance_single}"/>
-  <Column name="Date"           dataType="String"  columnType="Partitioning"/>
-  <Column name="OrderId"        dataType="String"  columnType="Grouping"/>
+  <Column name="Date"           dataType="String" columnType="Partitioning"/>
+  <Column name="OrderID"        dataType="String" columnType="Grouping"/>
+  <Column name="ClOrdID"        dataType="String"/>
+  <Column name="OrigClOrdID"    dataType="String"/>
   <Column name="UpstreamRef"    dataType="String"/>
-  <Column name="ParentOrderId"  dataType="String"/>
+  <Column name="ParentOrderID"  dataType="String"/>
   <Column name="Symbol"         dataType="String"/>
   <Column name="Side"           dataType="String"/>
   <Column name="OrderQty"       dataType="long"/>
@@ -64,9 +81,11 @@ version's schema reference):
   <Column name="LeavesQty"      dataType="long"/>
   <Column name="AvgPx"          dataType="double"/>
   <Column name="OrdStatus"      dataType="String"/>
-  <Column name="EventTs"        dataType="java.time.Instant"/>
+  <Column name="ExecType"       dataType="String"/>
+  <Column name="MsgType"        dataType="String"/>
+  <Column name="TransactTime"   dataType="java.time.Instant"/>
   <Column name="RecvTs"         dataType="java.time.Instant"/>
-  <Column name="SeqNo"          dataType="long"/>
+  <Column name="MsgSeqNum"      dataType="long"/>
   <Column name="Topic"          dataType="String"/>
   <Column name="KafkaPartition" dataType="int"/>
   <Column name="KafkaOffset"    dataType="long"/>
@@ -93,7 +112,7 @@ One row per execution report as received. Same schema for all three systems.
 | `LastQty` | long | no | executed quantity of this report |
 | `LastPx` | double | no | execution price |
 | `TransactTime` | Instant | no | the execution's time as the executing venue reported it — the same on every hop (Q17) |
-| `EventTs`, `RecvTs` | Instant | `EventTs` yes, `RecvTs` no | as for orders |
+| `TransactTime`, `RecvTs` | Instant | `TransactTime` yes, `RecvTs` no | as for orders |
 | `Symbol`, `Side` | String | no | for display and sanity checks |
 | `KafkaPartition`, `KafkaOffset` | int, long | no | provenance |
 
@@ -110,21 +129,21 @@ maps them onto this contract (doc 04 §1). It is the only code that changes when
 |---|---|---|
 | `Level` | String | `A_ROOT`, `B_PARENT`, `B_CHILD`, `C_PARENT`, `C_CHILD` (constant per adapter) |
 | `System` | String | `A`, `B`, `C` |
-| `OrderId` | String | as raw; never null |
-| `LinkId` | String | the id of the **parent node**: `UpstreamRef` on `B_PARENT` and `C_PARENT`, `ParentOrderId` on `B_CHILD` and `C_CHILD`, `""` on `A_ROOT`; null → `""` |
-| `Symbol`, `Side` | String | as sent (one coding across systems, Q13); null → `""` |
+| `OrderId` | String | the raw row's `OrderID` (tag 37); never null. The canonical name differs in case from the FIX field on purpose: it is the lineage key, whatever tag a system's identity is read from |
+| `LinkId` | String | the id of the **parent node**: `UpstreamRef` on `B_PARENT` and `C_PARENT`, `ParentOrderID` on `B_CHILD` and `C_CHILD`, `""` on `A_ROOT`; null → `""` |
+| `Symbol`, `Side` | String | as sent, `Side` the FIX code (one coding across systems, Q13); null → `""` |
 | `OrderQty`, `CumQty`, `LeavesQty` | long | null → `0` (`LeavesQty` is present in all three systems, Q14) |
-| `Status` | String | `OrdStatus`, null → `""` |
+| `Status` | String | `OrdStatus`, the FIX code as sent; null → `""` |
 | `RecvTs` | Instant | as raw |
 | `Topic` | String | the drop-copy channel the state came from (Q6, Q7); null → `""` |
 | `Present` | boolean | constant `true`; joined onto children to tell "parent exists" from "parent exists with null columns" |
 
-Role split rule (A11, confirmed): `IS_PARENT = isNull(ParentOrderId)`. Null means parent; any
+Role split rule (A11, confirmed): `IS_PARENT = isNull(ParentOrderID)`. Null means parent; any
 non-null value means child. An empty string is therefore a child with no link, which the DAG
 reports as `NO_LINK` — a visible contract violation, never a silently misfiled parent. The
-pre-cutover check (doc 09 §6) asserts that no row carries an empty `ParentOrderId`. Should a
+pre-cutover check (doc 09 §6) asserts that no row carries an empty `ParentOrderID`. Should a
 feed turn out to send `""` for parents after all, the fix is the one-line relaxation doc 14 §3
-uses (`|| ParentOrderId == ```), applied knowingly and recorded here.
+uses (`|| ParentOrderID == ```), applied knowingly and recorded here.
 
 ## 4. In-worker lineage tables (`oms-lineage` globals)
 
@@ -291,12 +310,13 @@ names every candidate, which is the most the key can say.
 - **Quantities are `long`.** Gaps are exact; `QTY_TOL` exists only for fractional feeds.
 - **Nulls** are removed at the adapter (§3). A null parent column after a join means "no
   parent", never "parent with null value", because `ParentPresent` is checked first.
-- **Time**: `EventTs` (FIX tag 60) is GMT in all three systems and comparable (Q12). Aging uses
+- **Time**: `TransactTime` (FIX tag 60) is GMT in all three systems and comparable (Q12). Aging uses
   `RecvTs` by default (`OMS_TRACE_AGE_CLOCK=recv`): a republished old report would age instantly
   under event time. `OMS_TRACE_AGE_CLOCK=event` switches the gap and unresolved ages to
-  `EventTs`, which measures how long the books have disagreed in market time rather than in
+  `TransactTime`, which measures how long the books have disagreed in market time rather than in
   our observation time. The execution match key always uses event time (`TransactTime`).
-- **`Date`** is assigned by the ingester from `RecvTs` in the configured zone.
+- **`Date`** is the feed's TradeDate (tag 75) when it carries one, else assigned by the ingester from
+  `RecvTs` in the configured zone.
 
 ## 8. Configuration keys referenced by these tables
 
@@ -309,13 +329,13 @@ names every candidate, which is the most the key can say.
 | `OMS_TRACE_CLOCK_SEC` | `30` | the aging clock period |
 | `OMS_TRACE_QTY_TOL` | `0` | tolerance |
 | `OMS_TRACE_EXPECT_ONE_EDGES` | `A-Bp,Bc-Cp` | the 1 : 1 edges (A4) |
-| `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderId` | the in-system parent id column (Q15, confirmed) |
+| `OMS_TRACE_PARENT_ID_COLUMN` | `ParentOrderID` | the in-system parent id column (Q15, confirmed) |
 | `OMS_TOPICS_A` / `_B` / `_C` | — | comma-separated topic list per system (Q6); each topic maps to an ingester and, in the fallback layout, to a raw table `Orders<X>_<topic>` |
 | `OMS_TRACE_ONE_TABLE_PER_SYSTEM` | `true` | `true`: one raw table per system (internal partitions); `false`: one per topic, merged in the adapter |
 | `OMS_TRACE_UI_MAX_ROOTS` | `20` | the most roots one dashboard selection expands into a tree (Q2: a root can hold a few hundred B children) |
 | `OMS_TRACE_TZ` | `America/New_York` | `Date` assignment and the daily window |
 | `OMS_TRACE_FEED_STALE_SEC` | `120` | a topic silent for longer is `STALE` (during market hours; a quiet channel needs a producer heartbeat or a longer threshold) |
-| `OMS_TRACE_FEED_CATCHUP_SEC` | `300` | a topic whose newest `EventTs` is further behind now is `CATCHING_UP` (Q12 makes event time comparable) |
+| `OMS_TRACE_FEED_CATCHUP_SEC` | `300` | a topic whose newest `TransactTime` is further behind now is `CATCHING_UP` (Q12 makes event time comparable) |
 | `OMS_TRACE_AGE_CLOCK` | `recv` | `recv` (receive time) or `event` (tag 60, GMT, Q12) as the clock the gap and unresolved ages are measured against |
 | `OMS_TRACE_EXEC_PX_SCALE` | `1000000` | price precision for the execution match key (1e-6) |
 | `OMS_TRACE_EXEC_TIME_BUCKET_MS` | `1` | transaction-time precision for the execution match key; set from the pre-cutover match-rate report |
