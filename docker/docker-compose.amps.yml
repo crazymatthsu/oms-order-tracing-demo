@@ -37,6 +37,8 @@ services:
       OMS_AMPS_FIELD_MAP: "${OMS_AMPS_FIELD_MAP:-}"               # json: body field=RawColumn,...
       OMS_AMPS_TAG_MAP: "${OMS_AMPS_TAG_MAP:-}"                   # fix: tag=RawColumn,... (parent / upstream tags)
       OMS_AMPS_HEARTBEAT_SEC: "${OMS_AMPS_HEARTBEAT_SEC:-5}"
+      OMS_AMPS_MODE: "${OMS_AMPS_MODE:-sow}"                     # sow (in-worker mirror) | bookmark (transaction-log replay)
+      OMS_AMPS_BOOKMARK_DIR: /tmp/oms-amps-bookmarks
       OMS_AMPS_CLIENT_NAME: "${OMS_AMPS_CLIENT_NAME:-dh-oms-trace-demo}"
 
   amps:

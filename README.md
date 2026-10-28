@@ -141,8 +141,10 @@ error that names the key. The AMPS source adds `OMS_AMPS_URI` (one or more, comm
 `OMS_AMPS_TOPICS_{A,B,C}` (default: the `OMS_TOPICS_*` lists), `OMS_AMPS_FORMAT=json|fix`,
 `OMS_AMPS_FIELD_MAP` (`bodyField=RawColumn,...`), `OMS_AMPS_TAG_MAP` (`tag=RawColumn,...`; the
 parent and upstream tags of a FIX body must be mapped), `OMS_AMPS_HEARTBEAT_SEC` (5),
-`OMS_AMPS_CLIENT_NAME`, `OMS_AMPS_BATCH_SIZE`, `OMS_AMPS_TIMEOUT_MS`, `OMS_AMPS_MAX_PENDING` and,
-for the ingester PQ, `OMS_AMPS_PERSIST_SNAPSHOT`. Alerting adds `OMS_TRACE_ALERT_URL`,
+`OMS_AMPS_CLIENT_NAME`, `OMS_AMPS_BATCH_SIZE`, `OMS_AMPS_TIMEOUT_MS`, `OMS_AMPS_MAX_PENDING`,
+`OMS_AMPS_MODE=sow|bookmark` (the ingester PQ runs `bookmark`: a transaction-log subscription that
+resumes from a file-backed store under `OMS_AMPS_BOOKMARK_DIR`, first start per
+`OMS_AMPS_BOOKMARK_FIRST=EPOCH|NOW`) and, in `sow` mode, `OMS_AMPS_PERSIST_SNAPSHOT`. Alerting adds `OMS_TRACE_ALERT_URL`,
 `OMS_TRACE_ALERT_AUTH_HEADER` (`Name: value`, from the secret store), `OMS_TRACE_MARKET_HOURS`
 (`09:30-16:00` in `OMS_TRACE_TZ`; empty = always) and the `OMS_TRACE_ALERT_*` thresholds of
 docs/design/03 §8 (page counts, persistence windows, growth factor, ring size).

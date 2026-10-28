@@ -1,5 +1,13 @@
-"""oms-ingest-amps-<x>: one system's AMPS SOW states into OMS_RAW.Orders<X> through the Derived
-Table Writer (docs/design/11 section 5).
+"""oms-ingest-amps-<x>: one system's AMPS order states into OMS_RAW.Orders<X> through the Derived
+Table Writer (docs/design/11 section 5, decision D17).
+
+The subscription is a bookmark subscribe over the topics' transaction log (OMS_AMPS_MODE=bookmark,
+the default here): the client resumes from the bookmark it persisted under OMS_AMPS_BOOKMARK_DIR
+(shared storage, so a PQ restarted on another node finds it), a reconnect replays only what was
+missed, and nothing is a re-snapshot, so the writer sees each message once (an at-least-once
+window of one flush on a crash). The first start of a trading day replays from EPOCH or NOW
+(OMS_AMPS_BOOKMARK_FIRST) within the journal's retention. OMS_AMPS_MODE=sow is the older
+snapshot path with OMS_AMPS_PERSIST_SNAPSHOT.
 
 Live Query - Merge Server, Core+ Python. Environment: OMS_SYSTEM (A|B|C), OMS_AMPS_URI (credentials
 from the environment's secret store, never from this file), OMS_AMPS_TOPICS_<X>, OMS_AMPS_FORMAT,
@@ -30,6 +38,8 @@ if _SRC and _SRC not in sys.path:
 
 from oms_trace import amps_sow, config, enterprise  # noqa: E402
 
+os.environ.setdefault("OMS_AMPS_MODE", "bookmark")
+
 settings = config.load_settings()
 SYSTEM = os.environ["OMS_SYSTEM"]
 amps = amps_sow.AmpsSettings.from_env(settings=settings).for_system(SYSTEM)
@@ -54,4 +64,4 @@ DerivedTableWriter.ingestTable(dis, opts["namespace"], opts["table_name"], opts[
                                opts["internal_partition"], states.j_table, options)
 print(f"[oms-ingest-amps] {SYSTEM} {', '.join(amps.topics[SYSTEM])} -> {opts['namespace']}.{opts['table_name']}"
       f" partition {opts['column_partition']}/{opts['internal_partition']}"
-      f" ({'snapshot+change' if amps.persist_snapshot else 'change'} rows)", flush=True)
+      f" ({amps.mode} mode: {'every' if amps.mode == 'bookmark' or amps.persist_snapshot else 'change'} rows)", flush=True)

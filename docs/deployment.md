@@ -169,3 +169,87 @@ forensic queries).
 | Controller configuration fields and scheduling strings | `oms_trace.pqdefs.CONTROLLER_FIELDS`, `scheduling_lines` |
 | Worker venv path | `COREPLUS_VENV` in `deploy/deploy.env` |
 | Schema XML attribute names | `schemas/*.schema` |
+
+## Enterprise test environment: the checklist
+
+Everything above was proven on the Community engine and with stubs; these items need the cluster.
+Record the outcome in the last column and keep this table in the repository (one copy per
+environment is fine). Items 1–2 are cluster access and spellings; 3–6 are the test plan and need
+the feeds.
+
+### 1. Identifiers to confirm on 2026.01.054 (blocks everything else)
+
+| # | Item | Where to adjust | Outcome |
+|---|---|---|---|
+| 1.1 | `dhconfig` subcommands and flags: `version`, `schema import --file`, `schema list --namespace`, `dis add --name/--storage/--claim`, `dis list`, `routing validate`, `properties import --file`, `pq check-repo`, `pq export/import/restart` | the `run dh ...` lines in `scripts/*.sh` | |
+| 1.2 | Core+ Kafka ingester: `kafka_table_writer_options`, `get_dis_by_name`, `dis.consume`, `OnReject.LOG`, the partition / internal-partition options | `queries/oms_trace/ingest.py`, `oms_trace.enterprise.ingester_options` | |
+| 1.3 | Derived Table Writer: `DataImportServerTools.getDisByNameWithStorage`, `DerivedTableWriter.ingestTable(dis, namespace, table, columnPartition, internalPartition, table, options)`, the `Options` builder (`onReject`, `sequenceColumn`) | `queries/oms_trace/ingest_amps.py`, `queries/oms_trace/drift_writer.py`, `enterprise.dtw_options` / `drift_writer_options` | |
+| 1.4 | Core+ client: `SessionManager`, `private_key`, `connect_to_persistent_query`, `open_table`, `barrage_subscribe`, `controller_client` | `queries/oms_trace/drift_writer.py`, `queries/oms_trace/ui.py`, `oms_trace.pqdefs.apply` | |
+| 1.5 | Controller configuration fields and scheduling strings; the Query Monitor's type labels | `oms_trace.pqdefs.CONTROLLER_FIELDS`, `scheduling_lines`, `PQ_TYPES` | |
+| 1.6 | The Core+ worker venv path (`COREPLUS_VENV`) and the Python version the workers run | `deploy/deploy.env` | |
+| 1.7 | Schema XML attribute names (`storageType`, `defaultMergeFormat`, `columnType`, `java.time.Instant`, `Boolean`) | `schemas/*.schema` | |
+| 1.8 | `amps-python-client` installs into the worker venv (wheel available on the pip index for the worker's Python) | `scripts/install_worker_venv.sh` | |
+
+### 2. One pass of the kit on UAT
+
+| # | Item | Evidence | Outcome |
+|---|---|---|---|
+| 2.1 | irisadmin's SSH deploy key accepted by the Git host from the infra container | `ssh -T` prints the greeting | |
+| 2.2 | `scripts/check_env.sh` passes | exit 0 | |
+| 2.3 | `scripts/deploy_schemas.sh`: both namespaces listed | `dhconfig schema list` | |
+| 2.4 | `scripts/deploy_dis.sh`: four DISes, routing valid, `db.live_table("OMS_RAW","OrdersA")` returns an empty table | console | |
+| 2.5 | `scripts/build_wheel.sh` + `install_worker_venv.sh`: `import oms_trace` works in a Core+ console on every node | console | |
+| 2.6 | `scripts/deploy_git_repo.sh`, controller restarted, `dhconfig pq check-repo` passes; scripts visible in the Query Monitor dropdown | Query Monitor | |
+| 2.7 | ACL groups created, export saved under `pq/acl/` | `pq/acl/` | |
+| 2.8 | `scripts/deploy_pqs.sh --dry-run` matches what was entered; `--apply` creates or updates every PQ; `--export` saved under `pq/export/` | `pq/export/` | |
+| 2.9 | Start order holds: ingesters, lineage, writer, UI; each PQ reaches Running within its init timeout | Query Monitor | |
+
+### 3. Ingestion and persistence (docs/design/05 §10)
+
+| # | Item | Evidence | Outcome |
+|---|---|---|---|
+| 3.1 | Each ingester writes today's partition; `db.live_table` ticks in a console | row counts rising | |
+| 3.2 | A SIGKILL'd ingester resumes from its checkpoint: row counts and offset ranges continue with no gap and no duplicate (AC6) | before / after counts | |
+| 3.3 | One malformed record on a UAT topic is logged and skipped (`OnReject.LOG`), the PQ keeps running | ingester log | |
+| 3.4 | Midnight: a new `Date` partition appears without a restart; the lineage window follows (`OMS_TRACE_DATE_WINDOW_DAYS`) | partitions, `trace_stats` | |
+| 3.5 | Data Merge for yesterday runs; `db.historical_table` returns the merged rows; validation passes; the intraday partition older than the window is deleted | merge / validation PQs | |
+| 3.6 | AMPS path (when used): the first start of the day with `OMS_AMPS_PERSIST_SNAPSHOT=true` fills the partition; a restart within the day persists change rows only; a reconnect re-snapshot is `CATCHING_UP` then `CURRENT` | `amps_topics`, partition counts | |
+
+### 4. Derived Table Writer semantics
+
+| # | Item | Outcome |
+|---|---|---|
+| 4.1 | Whether the writer wants the partitioning column present in the table it is handed, or takes the column partition from the argument only | |
+| 4.2 | Whether a Barrage copy of the lineage PQ's `break_events` still counts as a blink or add-only table for the writer | |
+| 4.3 | AMPS bookmark mode (D17): a reconnect resumes from the store with no re-snapshot; a crash between publish and discard replays at most one flush, which `last_by(OrderId)` absorbs; the bookmark store on shared storage survives a PQ moving nodes | |
+| 4.3b | Whether `sow_delete` and expiry events replay to a bookmark subscriber (60East); the journal's retention against the `Date` window | |
+| 4.4 | `OMS_TRACE.DriftEvents` carries every alert row (`Level = ALERT`) and every transition the lineage emitted | |
+
+### 5. The real feeds (before cutover, docs/design/09 §6)
+
+| # | Item | Evidence | Outcome |
+|---|---|---|---|
+| 5.1 | `oms_trace.trace_check` on one day of raw rows from each system: no contract violations (null parent id = parent, children carry no `UpstreamRef`) | report | |
+| 5.2 | The body format and tags: 5011 on A's destination orders, B's and C's parent and upstream references | tag / field map in `deploy.env` | |
+| 5.3 | Resolution rate per hop ≥ 99.9 % once lag settles; `DestMinusCli` and `CParentsMinusBChildren` sit at zero | `trace_check`, `trace_stats` | |
+| 5.4 | Each topic's longest silence on a normal day, to set `OMS_TRACE_FEED_STALE_SEC` (a quiet channel needs a producer heartbeat or a longer threshold) | `trace_check` topics | |
+| 5.5 | Tag 60 comparable across systems (GMT) for `OMS_TRACE_AGE_CLOCK=event` and the `CATCHING_UP` rule | spot checks | |
+| 5.6 | The alert sink endpoint receives a test alert; the auth header from the secret store works | `alerts.Posted = 200` | |
+
+### 6. Sizing and recovery (docs/design/06)
+
+| # | Item | Measured | Outcome |
+|---|---|---|---|
+| 6.1 | Lineage PQ heap after a full day at production volume (expected case 96 GB, doc 06 §1.3) | | |
+| 6.2 | Recovery time after a lineage restart over the window; init timeout set to twice it | | |
+| 6.3 | Update-graph cycle time at the market-close burst (10k msg/s per topic, up to 8 topics per system); p99 under 1 s | | |
+| 6.4 | Barrage subscriptions of the UI and writer PQs stay small (no node tables) | | |
+| 6.5 | Decision: the single worker holds, or the edge-family sharding of doc 06 §4 is needed | | |
+
+### 7. Not yet built, exercised by the environment
+
+| # | Item | Outcome |
+|---|---|---|
+| 7.1 | Data Merge and Data Validation PQs per raw table (type-defined, created in the Query Monitor) | |
+| 7.2 | ACL exports under `pq/acl/` | |
+| 7.3 | The end-of-day summary (`OMS_TRACE.DailyDriftSummary`) and the execution-level identification (P2b) with the `Execs` feeds and schemas | |
