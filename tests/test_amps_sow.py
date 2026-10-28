@@ -256,9 +256,9 @@ def test_source_subscribes_every_topic_routes_rows_per_system_and_tracks_the_con
         h(FakeMessage("group_end"))
     b2(FakeMessage("publish", body("Bc-1", parent="Bp-1", cum=10), sow_key="b2"))
     rows_b = source.buffers["B"].drain()
-    assert [(r["OrderId"], r["Topic"], s, e) for r, s, e in rows_b] == [
+    assert [(r["OrderId"], r["Topic"], s, e) for r, s, e, *_ in rows_b] == [
         ("Bp-1", "oms.b.t1", SNAPSHOT, 1), ("Bc-1", "oms.b.t2", SNAPSHOT, 1), ("Bc-1", "oms.b.t2", CHANGE, 1)]
-    assert [(r["OrderId"], s) for r, s, _ in source.buffers["A"].drain()] == [("A-1", SNAPSHOT)]
+    assert [(r["OrderId"], s) for r, s, *_ in source.buffers["A"].drain()] == [("A-1", SNAPSHOT)]
     assert source.buffers["C"].drain() == []
     # snapshot boundaries publish status rows: in progress, then complete
     status = source.status_buffer.drain()
@@ -275,12 +275,12 @@ def test_source_subscribes_every_topic_routes_rows_per_system_and_tracks_the_con
     b2(FakeMessage("group_begin"))
     b2(FakeMessage("group_end"))
     dropped = source.buffers["B"].drain()
-    assert [(r["OrderId"], r["SowDeleted"], s, e) for r, s, e in dropped] == [("Bc-1", True, CHANGE, 2)]
+    assert [(r["OrderId"], r["SowDeleted"], s, e) for r, s, e, *_ in dropped] == [("Bc-1", True, CHANGE, 2)]
     assert [r["Topic"] for r in source.status()] == ["oms.a.t1", "oms.b.t1", "oms.b.t2", "oms.c.t1"]
     assert all(r["Connected"] for r in source.status())
     source.stop()
     assert client.closed and len(client.unsubscribed) == 4 and not source.connected
-    assert source.buffers["B"].offer(("x", CHANGE, 1)) is False  # closed buffers refuse
+    assert source.buffers["B"].offer(("x", CHANGE, 1, None, None)) is False  # closed buffers refuse
 
 
 def test_event_buffer_is_bounded_and_drains_in_order():
@@ -330,3 +330,77 @@ def test_publisher_bodies_round_trip_through_the_source(book):
                 continue
             assert back[col] == row[col], (row["OrderId"], col, back[col], row[col])
         assert back["SowDeleted"] is False and back["KafkaOffset"] is None
+
+
+# -- bookmark mode (docs/design/11 section 5, D17) -------------------------------------------------------
+
+
+def test_bookmark_settings_and_start_rule():
+    a = AmpsSettings.from_env(dict(BASE_ENV, OMS_AMPS_MODE="bookmark", OMS_AMPS_BOOKMARK_DIR="/db/bm", OMS_AMPS_BOOKMARK_FIRST="now"))
+    assert a.mode == "bookmark" and a.bookmark_store_path == "/db/bm/dh-oms-trace.mmap" and a.bookmark_first == "NOW"
+    assert a.sub_id("oms.b.t1") == "dh-oms-trace:oms.b.t1"
+    b = a.for_system("B")
+    assert b.bookmark_store_path == "/db/bm/dh-oms-trace-b.mmap" and b.sub_id("oms.b.t1") == "dh-oms-trace-b:oms.b.t1"
+    assert "bookmark subscribe" in a.describe() and "sow_and_subscribe" in AmpsSettings.from_env(BASE_ENV).describe()
+    for bad in ({"OMS_AMPS_MODE": "replay"}, {"OMS_AMPS_BOOKMARK_FIRST": "yesterday"}):
+        with pytest.raises(config.SettingsError):
+            AmpsSettings.from_env(dict(BASE_ENV, **bad))
+    from oms_trace.amps_testing import FakeBookmarkStore
+
+    store = FakeBookmarkStore()
+    assert amps_sow.bookmark_start(store, "x:t", "EPOCH") == "0" and amps_sow.bookmark_start(store, "x:t", "NOW") == "0|1|"
+    store.recent["x:t"] = "12|345|"
+    assert amps_sow.bookmark_start(store, "x:t", "EPOCH") == "recent"
+    assert amps_sow.bookmark_start(None, "x:t", "EPOCH") == "0"
+
+
+def test_bookmark_mode_subscribes_from_the_store_and_discards_after_publish():
+    from oms_trace.amps_testing import FakeBookmarkStore
+
+    store = FakeBookmarkStore()
+    source, clients = stub_source({"OMS_AMPS_MODE": "bookmark", "OMS_AMPS_BOOKMARK_DIR": "/tmp/bm"})
+    source._store_factory = lambda amps: store
+    source.connect()
+    client = clients[0]
+    assert client.store is store and source.store is store
+    cmd = client.commands["oms.b.t1"]
+    assert cmd.kind == "subscribe" and cmd.start == "0" and cmd.sub_id == "dh-oms-trace:oms.b.t1"  # first start: EPOCH
+    b1 = client.handlers["oms.b.t1"]
+    # three publishes from the transaction log, each with its bookmark; nothing is a snapshot
+    for i, (oid, cum) in enumerate((("Bp-1", 0), ("Bc-1", 10), ("Bc-1", 20)), start=1):
+        b1(FakeMessage("publish", body(oid, parent="Bp-1" if oid != "Bp-1" else None, cum=cum), sow_key=f"k{oid}",
+                       bookmark=f"7|{i}|", sub_id="dh-oms-trace:oms.b.t1"))
+    assert store.discarded == []  # nothing discarded before the rows are published
+    items = source.drain_and_ack("B")
+    assert [(it[0]["OrderId"], it[1], it[3]) for it in items] == [("Bp-1", CHANGE, "7|1|"), ("Bc-1", CHANGE, "7|2|"), ("Bc-1", CHANGE, "7|3|")]
+    assert [m.get_bookmark() for m in store.discarded] == ["7|1|", "7|2|", "7|3|"] and source.discarded == 3
+    assert store.recent["dh-oms-trace:oms.b.t1"] == "7|3|"
+    assert source.mirrors[("B", "oms.b.t1")].last_bookmark == "7|3|" and source.mirrors[("B", "oms.b.t1")].epoch == 0
+    # garbage is rejected, counted and still discarded: the log position moves past it
+    b1(FakeMessage("publish", "not json", sow_key="kx", bookmark="7|4|", sub_id="dh-oms-trace:oms.b.t1"))
+    assert store.recent["dh-oms-trace:oms.b.t1"] == "7|4|" and source.mirrors[("B", "oms.b.t1")].counts["rejected"] == 1
+    status = [r for r in source.status() if r["Topic"] == "oms.b.t1"][0]
+    assert status["LastBookmark"] == "7|4|" and status["SnapshotInProgress"] is False
+    source.stop()
+    # a restart with the same store resumes from the most recent bookmark instead of replaying the log
+    source2, clients2 = stub_source({"OMS_AMPS_MODE": "bookmark", "OMS_AMPS_BOOKMARK_DIR": "/tmp/bm"})
+    source2._store_factory = lambda amps: store
+    source2.connect()
+    assert clients2[0].commands["oms.b.t1"].start == "recent"
+    assert clients2[0].commands["oms.a.t1"].start == "0"  # a topic never discarded still starts at EPOCH
+    source2.stop()
+
+
+def test_real_bookmark_store_round_trip():
+    AMPS = pytest.importorskip("AMPS")
+    store = AMPS.MemoryBookmarkStore()
+    assert amps_sow.bookmark_start(store, "c:t", "EPOCH") == "0"
+    m = AMPS.Message()
+    m.set_command("publish")
+    m.set_sub_id("c:t")
+    m.set_bookmark("3|17|")
+    m.set_data("{}")
+    store.log(m)
+    store.discard_message(m)
+    assert store.get_most_recent("c:t") not in ("", "0")
+    assert amps_sow.bookmark_start(store, "c:t", "EPOCH") == "recent"

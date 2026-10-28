@@ -138,6 +138,34 @@ book. Doc 08 gains the failure row.
 - The lineage PQ is **unchanged**: `OMS_TRACE_SOURCE=enterprise`, `db.live_table` over
   `OMS_RAW.Orders<X>`, the same Date window.
 
+### 5.1 Decision D17: the persistence path subscribes to the transaction log, not the SOW
+
+A reconnect of `sow_and_subscribe` re-sends the whole SOW. For the in-worker mirror that is the
+recovery mechanism; for the Derived Table Writer it is a duplicated book per reconnect and the
+end of any exactly-once story, which the `snapshot` / `change` split above only patched over.
+The SOW topics have a **transaction log**, so the ingester PQ uses a bookmark subscription
+instead (`OMS_AMPS_MODE=bookmark`, the default in `queries/oms_trace/ingest_amps.py`):
+
+- `subscribe` with the `bookmark` option and a stable sub id per topic (`<client>:<topic>`),
+  replaying from the bookmark the client's file-backed store holds
+  (`OMS_AMPS_BOOKMARK_DIR/<client>.mmap`, on shared storage so a PQ restarted on another node
+  finds it). A topic with no stored bookmark starts at `EPOCH` or `NOW`
+  (`OMS_AMPS_BOOKMARK_FIRST`); the first start of a trading day replays from the journal within
+  its retention.
+- Every message is a `publish`: a `change` row carrying its `Bookmark`. The row's bookmark is
+  discarded once the row has been published to the blink table, so the writer sees each message
+  once. The window between publish and discard is the at-least-once window: a crash inside it
+  replays those rows, which `last_by(OrderId)` absorbs. The Core+ Kafka ingester does better
+  (offset and table size committed together); nothing in the AMPS client offers that join.
+- A reconnect resumes from the store: no snapshot, no `CATCHING_UP` beyond the real backlog,
+  `SnapshotInProgress` never set. Deletes: `oof` is a live-subscription signal, and whether
+  `sow_delete` and expiry replay from the journal is to be confirmed with 60East (§6); a missed
+  `SowDeleted` row costs a flag, never a quantity.
+- `OMS_AMPS_PERSIST_SNAPSHOT` stays for `sow` mode only.
+
+The lineage PQ's own in-worker source keeps `sow_and_subscribe` (`OMS_AMPS_MODE=sow`): there the
+re-snapshot is wanted. One topic, two subscription styles, two jobs.
+
 ## 6. What stays open
 
 - The AMPS client library (`amps-python-client`) must be in the worker's Python environment:
@@ -148,6 +176,8 @@ book. Doc 08 gains the failure row.
 - SOW expiry policy per topic: how long a filled or canceled order stays in the SOW decides how
   far back the lineage can see without the DIS.
 - The DTW options (`transactionsEnabled`, `sequenceColumn`, chunking) on the installed release.
+- Whether `sow_delete` and SOW expiry events replay to a bookmark subscriber from the transaction
+  log (60East), and the journal's retention against the two-day `Date` window.
 
 ## 7. Verification
 

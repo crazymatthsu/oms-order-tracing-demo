@@ -1,7 +1,7 @@
 {
   "name": "oms-ingest-amps-c",
   "enabled": false,
-  "description": "AMPS SOW feeds for system C instead of Kafka (docs/design/11 section 5): the in-worker client and the Derived Table Writer into OMS_RAW.OrdersC. Enable this and disable oms-ingest-c when system C publishes to AMPS. OMS_AMPS_PERSIST_SNAPSHOT=true on the first start of a trading day only.",
+  "description": "AMPS feeds for system C instead of Kafka (docs/design/11 section 5, D17): a bookmark subscribe over the SOW topics' transaction log and the Derived Table Writer into OMS_RAW.OrdersC; the bookmark store under OMS_AMPS_BOOKMARK_DIR (shared storage). Enable this and disable oms-ingest-c when system C publishes to AMPS.",
   "type": "Live Query - Merge Server",
   "dispatcher": "merge",
   "script": "queries/oms_trace/ingest_amps.py",
@@ -16,9 +16,11 @@
     "OMS_AMPS_URI": "${OMS_AMPS_URI}",
     "OMS_AMPS_FORMAT": "${OMS_AMPS_FORMAT:-json}",
     "OMS_AMPS_TAG_MAP": "${OMS_AMPS_TAG_MAP:-}",
-    "OMS_AMPS_PERSIST_SNAPSHOT": "false",
     "DIS_STORAGE_ROOT": "${DIS_STORAGE_ROOT}",
     "OMS_TRACE_TZ": "${OMS_TRACE_TZ}",
-    "OMS_TRACE_SRC": "${OMS_TRACE_SRC:-}"
+    "OMS_TRACE_SRC": "${OMS_TRACE_SRC:-}",
+    "OMS_AMPS_MODE": "bookmark",
+    "OMS_AMPS_BOOKMARK_DIR": "${OMS_AMPS_BOOKMARK_DIR}",
+    "OMS_AMPS_BOOKMARK_FIRST": "${OMS_AMPS_BOOKMARK_FIRST:-EPOCH}"
   }
 }

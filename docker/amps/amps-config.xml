@@ -46,6 +46,16 @@
     </Target>
   </Logging>
 
+  <!-- The transaction log behind the SOW topics: a bookmark subscribe replays from it (docs/design/11 D17,
+       OMS_AMPS_MODE=bookmark). Relative to /amps/data. -->
+  <TransactionLog>
+    <JournalDirectory>./journal/</JournalDirectory>
+    <Topic>
+      <Name>oms\..*</Name>
+      <MessageType>json</MessageType>
+    </Topic>
+  </TransactionLog>
+
   <!-- One SOW topic per drop-copy channel (Q6), parents and children on the same topic (Q7). -->
   <SOW>
     <Topic>

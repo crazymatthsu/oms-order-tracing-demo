@@ -42,6 +42,17 @@ Threads::
     -------------------                 ------------------------      -------------------
     handler -> TopicMirror ---offer---> [(row, stream, epoch)] ---drain---> on_flush -> publisher.add
 
+Two subscription modes (``OMS_AMPS_MODE``, docs/design/11 section 5):
+
+* ``sow``: ``sow_and_subscribe``, the snapshot-then-changes feed above. Right for the in-worker
+  mirror: a reconnect re-snapshots and repairs the book, which is a feature there.
+* ``bookmark``: ``subscribe`` over the topic's **transaction log** from a bookmark the client keeps
+  in a file-backed store (``OMS_AMPS_BOOKMARK_DIR/<client>.mmap``, a stable sub id per topic). A
+  reconnect resumes where it stopped: no snapshot, no duplicated book. Every message is a
+  ``publish`` (a ``change`` row, with its ``Bookmark``); a bookmark is discarded once its row has
+  been published to the blink table, so the Derived Table Writer sees each message once, with
+  the small at-least-once window between publish and discard. Right for the persistence path.
+
 Nothing at module scope imports ``deephaven`` or ``AMPS`` (``pip install amps-python-client``,
 the ``amps`` extra): the settings, the body parsers and the fold are unit-tested on a bare
 python with a stub client (``tests/test_amps_sow.py``).
@@ -80,6 +91,23 @@ BATCH_SIZE_ENV = "OMS_AMPS_BATCH_SIZE"
 TIMEOUT_ENV = "OMS_AMPS_TIMEOUT_MS"
 MAX_PENDING_ENV = "OMS_AMPS_MAX_PENDING"
 PERSIST_SNAPSHOT_ENV = "OMS_AMPS_PERSIST_SNAPSHOT"
+MODE_ENV = "OMS_AMPS_MODE"
+BOOKMARK_DIR_ENV = "OMS_AMPS_BOOKMARK_DIR"
+BOOKMARK_FIRST_ENV = "OMS_AMPS_BOOKMARK_FIRST"
+
+#: ``sow``: ``sow_and_subscribe`` (a snapshot, then changes; re-snapshot on reconnect) for the in-worker
+#: mirror. ``bookmark``: ``subscribe`` over the topic's transaction log from a persisted bookmark (resumes
+#: where it stopped on reconnect; no snapshot, no duplicates) for the Derived Table Writer path
+#: (docs/design/11 section 5, decision D17).
+MODES = ("sow", "bookmark")
+#: AMPS bookmark constants (``AMPS.Client.Bookmarks``): the start of the log, the newest message, resume.
+BOOKMARK_EPOCH = "0"
+BOOKMARK_NOW = "0|1|"
+BOOKMARK_RECENT = "recent"
+BOOKMARK_FIRSTS = {"EPOCH": BOOKMARK_EPOCH, "NOW": BOOKMARK_NOW}
+DEFAULT_BOOKMARK_DIR = "amps-bookmarks"
+#: ``bookmark``: replay from the bookmark; the store the client holds tracks what was discarded.
+BOOKMARK_SUBSCRIBE_OPTIONS = "bookmark"
 
 DEFAULT_CLIENT_NAME = "dh-oms-trace"
 #: Seconds between AMPS heartbeats (docs/design/11 section 4.5); 0 turns them off.
@@ -168,6 +196,9 @@ class AmpsSettings:
     max_pending: int = DEFAULT_MAX_PENDING
     persist_snapshot: bool = False
     tz: str = "America/New_York"
+    mode: str = "sow"                      # sow | bookmark
+    bookmark_dir: str = DEFAULT_BOOKMARK_DIR  # the file-backed bookmark store, <client_name>.mmap inside
+    bookmark_first: str = "EPOCH"          # where a subscription with no stored bookmark starts: EPOCH | NOW
 
     def __post_init__(self) -> None:
         if self.field_map is None:
@@ -176,6 +207,10 @@ class AmpsSettings:
             object.__setattr__(self, "tag_map", dict(DEFAULT_TAG_MAP))
         if self.body_format not in ("json", "fix"):
             raise SettingsError(f"{FORMAT_ENV}={self.body_format!r} must be json or fix")
+        if self.mode not in MODES:
+            raise SettingsError(f"{MODE_ENV}={self.mode!r} must be one of {MODES}")
+        if self.bookmark_first not in BOOKMARK_FIRSTS:
+            raise SettingsError(f"{BOOKMARK_FIRST_ENV}={self.bookmark_first!r} must be EPOCH or NOW")
         if not any(self.topics.get(s) for s in SYSTEMS):
             raise SettingsError("no AMPS topics: set " + ", ".join(TOPICS_ENV.format(system=s) for s in SYSTEMS))
 
@@ -207,7 +242,19 @@ class AmpsSettings:
             max_pending=_int_env(env, MAX_PENDING_ENV, DEFAULT_MAX_PENDING, 1),
             persist_snapshot=_bool_env(env, PERSIST_SNAPSHOT_ENV, False),
             tz=settings.tz,
+            mode=env.get(MODE_ENV, "").strip() or "sow",
+            bookmark_dir=env.get(BOOKMARK_DIR_ENV, "").strip() or DEFAULT_BOOKMARK_DIR,
+            bookmark_first=(env.get(BOOKMARK_FIRST_ENV, "").strip() or "EPOCH").upper(),
         )
+
+    @property
+    def bookmark_store_path(self) -> str:
+        """One store per client name (``for_system`` gives each ingester PQ its own)."""
+        return os.path.join(self.bookmark_dir, f"{self.client_name}.mmap")
+
+    def sub_id(self, topic: str) -> str:
+        """The stable subscription id a bookmark is stored under: it must not change across restarts."""
+        return f"{self.client_name}:{topic}"
 
     def for_system(self, system: str) -> "AmpsSettings":
         """The same settings with only ``system``'s topics (one ingester PQ per system)."""
@@ -222,7 +269,8 @@ class AmpsSettings:
         """For the log: the URIs with any password masked."""
         uris = ", ".join(_CREDENTIALS.sub(r"\1:****@", u) for u in self.uris)
         heartbeat = f"heartbeat {self.heartbeat_sec} s" if self.heartbeat_sec else "no heartbeat"
-        return f"{uris} as {self.client_name} ({self.body_format} bodies, batch {self.batch_size}, {heartbeat})"
+        mode = "sow_and_subscribe" if self.mode == "sow" else f"bookmark subscribe, store {self.bookmark_store_path}"
+        return f"{uris} as {self.client_name} ({mode}; {self.body_format} bodies, batch {self.batch_size}, {heartbeat})"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -381,6 +429,7 @@ class TopicMirror:
         self.epoch = 0
         self.in_snapshot = False
         self.last_recv_ns: Optional[int] = None
+        self.last_bookmark: Optional[str] = None  # bookmark mode: the newest bookmark seen on this topic
         self.counts: Dict[str, int] = {"sow": 0, "publish": 0, "delete": 0, "dropped": 0, "rejected": 0, "snapshots": 0}
         self.last_error: Optional[str] = None
 
@@ -484,7 +533,7 @@ class TopicMirror:
             "SnapshotInProgress": self.in_snapshot, "Connected": connected, "LastRecvTs": self.last_recv_ns,
             "Records": len(self.records), "Live": self.live(),
             "Deleted": self.counts["delete"] + self.counts["dropped"], "Rejected": self.counts["rejected"],
-            "LastError": self.last_error, "StatusTs": now_ns,
+            "LastError": self.last_error, "LastBookmark": self.last_bookmark, "StatusTs": now_ns,
         }
 
 
@@ -551,18 +600,41 @@ def default_client_factory(amps: AmpsSettings) -> Any:
     return client
 
 
-def default_command_factory(topic: str, amps: AmpsSettings) -> Any:
-    """The ``sow_and_subscribe`` command for one topic."""
+def default_command_factory(topic: str, amps: AmpsSettings, start: Optional[str] = None) -> Any:
+    """The subscription for one topic: ``sow_and_subscribe`` in sow mode, a bookmark ``subscribe`` otherwise.
+
+    ``start`` (bookmark mode) is the bookmark to replay from: ``recent`` when the store already
+    holds one for this sub id, else the configured first start (EPOCH or NOW).
+    """
     import AMPS
 
+    if amps.mode == "bookmark":
+        return (AMPS.Command("subscribe").set_topic(topic).set_options(BOOKMARK_SUBSCRIBE_OPTIONS)
+                .set_sub_id(amps.sub_id(topic)).set_bookmark(start or BOOKMARK_EPOCH).set_timeout(amps.timeout_ms))
     return (AMPS.Command("sow_and_subscribe").set_topic(topic).set_options(SUBSCRIBE_OPTIONS)
             .set_batch_size(amps.batch_size).set_timeout(amps.timeout_ms))
+
+
+def default_store_factory(amps: AmpsSettings) -> Any:
+    """The file-backed bookmark store (``AMPS.MMapBookmarkStore``) under ``OMS_AMPS_BOOKMARK_DIR``."""
+    import AMPS
+
+    os.makedirs(amps.bookmark_dir, exist_ok=True)
+    return AMPS.MMapBookmarkStore(amps.bookmark_store_path)
+
+
+def bookmark_start(store: Any, sub_id: str, first: str) -> str:
+    """Resume from the store when it holds a bookmark for ``sub_id``, else start at EPOCH or NOW."""
+    recent = _text(store.get_most_recent(sub_id)) if store is not None else BOOKMARK_EPOCH
+    if recent and recent != BOOKMARK_EPOCH:
+        return BOOKMARK_RECENT
+    return BOOKMARK_FIRSTS[first]
 
 
 STATUS_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("System", "String"), ("Topic", "String"), ("Epoch", "int"), ("SnapshotInProgress", "boolean"),
     ("Connected", "boolean"), ("LastRecvTs", "Instant"), ("Records", "long"), ("Live", "long"),
-    ("Deleted", "long"), ("Rejected", "long"), ("LastError", "String"), ("StatusTs", "Instant"),
+    ("Deleted", "long"), ("Rejected", "long"), ("LastError", "String"), ("LastBookmark", "String"), ("StatusTs", "Instant"),
 )
 
 
@@ -578,14 +650,18 @@ class AmpsSowSource:
         settings: Settings,
         amps: AmpsSettings,
         client_factory: Callable[[AmpsSettings], Any] = default_client_factory,
-        command_factory: Callable[[str, AmpsSettings], Any] = default_command_factory,
+        command_factory: Callable[..., Any] = default_command_factory,
         clock: Callable[[], int] = time.time_ns,
         retry_seconds: float = 5.0,
+        store_factory: Callable[[AmpsSettings], Any] = default_store_factory,
     ) -> None:
         self.settings = settings
         self.amps = amps
         self._client_factory = client_factory
         self._command_factory = command_factory
+        self._store_factory = store_factory
+        self.store: Any = None  # the bookmark store (bookmark mode)
+        self.discarded = 0
         self._clock = clock
         self._retry_seconds = retry_seconds
         parser = make_parser(amps)
@@ -621,6 +697,7 @@ class AmpsSowSource:
         defs = dict(sources.raw_column_definitions())
         defs["SowStream"] = dtypes.string
         defs["SowEpoch"] = dtypes.int32
+        defs["Bookmark"] = dtypes.string
         for system in SYSTEMS:
             table, publisher = table_publisher(f"amps_{system.lower()}_states", defs,
                                                on_flush_callback=self._flusher(system), on_shutdown_callback=self.stop)
@@ -638,9 +715,13 @@ class AmpsSowSource:
         return dict(self.tables)
 
     def persist_table(self, system: str) -> Any:
-        """The rows the Derived Table Writer persists: ``change`` rows, plus ``snapshot`` rows when configured."""
+        """The rows the Derived Table Writer persists.
+
+        Bookmark mode: every row (the transaction log replays from where we stopped, nothing is a
+        re-snapshot). SOW mode: ``change`` rows, plus ``snapshot`` rows when configured.
+        """
         table = self.raw_tables()[system]
-        if not self.amps.persist_snapshot:
+        if self.amps.mode == "sow" and not self.amps.persist_snapshot:
             table = table.where(f"SowStream == `{CHANGE}`")
         return table.view(list(RAW_COLUMN_NAMES))
 
@@ -652,15 +733,41 @@ class AmpsSowSource:
 
     def _flusher(self, system: str) -> Callable[[Any], None]:
         def on_flush(publisher: Any) -> None:
-            """Update-graph thread: publish everything buffered since the last cycle; never raises."""
+            """Update-graph thread: publish everything buffered since the last cycle, then discard the
+            bookmarks of what was published (bookmark mode); never raises."""
             try:
                 items = self.buffers[system].drain()
                 if items:
                     with self._ctx:
                         publisher.add(self._batch(items))
+                    self._discard(items)
             except Exception:  # noqa: BLE001 - a flush exception would stall the update graph
                 traceback.print_exc()
         return on_flush
+
+    def _discard(self, items: Sequence[Tuple[Any, ...]]) -> None:
+        """Bookmark mode: tell the store these messages are done, so a reconnect resumes after them.
+
+        The window between publishing and discarding is the at-least-once window: a crash inside it
+        replays those few rows (docs/design/11 section 5).
+        """
+        client = self._client
+        if client is None:
+            return
+        for item in items:
+            message = item[4] if len(item) > 4 else None
+            if message is not None:
+                try:
+                    client.discard(message)
+                    self.discarded += 1
+                except Exception as exc:  # noqa: BLE001
+                    self.last_error = f"discard: {type(exc).__name__}: {exc}"
+
+    def drain_and_ack(self, system: str) -> List[Tuple[Any, ...]]:
+        """Without the engine (a console, a test): drain one system's buffer and discard its bookmarks."""
+        items = self.buffers[system].drain()
+        self._discard(items)
+        return items
 
     def _status_flush(self, publisher: Any) -> None:
         try:
@@ -672,15 +779,16 @@ class AmpsSowSource:
             traceback.print_exc()
 
     @staticmethod
-    def _batch(items: Sequence[Tuple[Row, str, int]]) -> Any:
+    def _batch(items: Sequence[Tuple[Any, ...]]) -> Any:
         from deephaven import new_table
         from deephaven.column import int_col, string_col
 
         from oms_trace import sources
 
-        cols = sources.raw_columns([row for row, _, _ in items])
-        cols.append(string_col("SowStream", [stream for _, stream, _ in items]))
-        cols.append(int_col("SowEpoch", [epoch for _, _, epoch in items]))
+        cols = sources.raw_columns([item[0] for item in items])
+        cols.append(string_col("SowStream", [item[1] for item in items]))
+        cols.append(int_col("SowEpoch", [item[2] for item in items]))
+        cols.append(string_col("Bookmark", [item[3] for item in items]))
         return new_table(cols)
 
     @staticmethod
@@ -699,12 +807,21 @@ class AmpsSowSource:
         mirror = self.mirrors[key]
         buffer = self.buffers[system]
 
+        bookmark_mode = self.amps.mode == "bookmark"
+
         def on_message(message: Any) -> None:
             try:
                 now = self._clock()
                 command = _text(message.get_command())
-                for row, stream in mirror.on_message(message, now):
-                    buffer.offer((row, stream, mirror.epoch))
+                bookmark = _text(message.get_bookmark()) or None if bookmark_mode else None
+                if bookmark:
+                    mirror.last_bookmark = bookmark
+                rows = mirror.on_message(message, now)
+                for row, stream in rows:
+                    # the message rides along in bookmark mode so the flush can discard it once published
+                    buffer.offer((row, stream, mirror.epoch, bookmark, message if bookmark_mode else None))
+                if bookmark_mode and not rows and bookmark:
+                    self._discard([(None, None, None, bookmark, message)])  # a rejected or ignored message is done too
                 boundary = command in ("group_begin", "group_end")
                 if boundary or now - self._status_ts.get(key, 0) >= STATUS_INTERVAL_NS:
                     self._status_ts[key] = now
@@ -722,11 +839,21 @@ class AmpsSowSource:
         client = self._client_factory(self.amps)
         try:
             client.add_connection_state_listener(self._on_connection_state)
+            if self.amps.mode == "bookmark":
+                if self.store is None:
+                    self.store = self._store_factory(self.amps)
+                client.set_bookmark_store(self.store)  # the HA client re-subscribes from it on reconnect
             client.connect_and_logon()
+            self._client = client  # discards during the first replay need it
             for system, topic in self.amps.subscriptions():
-                command = self._command_factory(topic, self.amps)
+                if self.amps.mode == "bookmark":
+                    start = bookmark_start(self.store, self.amps.sub_id(topic), self.amps.bookmark_first)
+                    command = self._command_factory(topic, self.amps, start)
+                else:
+                    command = self._command_factory(topic, self.amps)
                 self._sub_ids.append(client.execute_async(command, self.handler(system, topic)))
         except Exception:
+            self._client = None
             self._safe_close(client)
             raise
         self._client = client

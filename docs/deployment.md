@@ -221,7 +221,8 @@ the feeds.
 |---|---|---|
 | 4.1 | Whether the writer wants the partitioning column present in the table it is handed, or takes the column partition from the argument only | |
 | 4.2 | Whether a Barrage copy of the lineage PQ's `break_events` still counts as a blink or add-only table for the writer | |
-| 4.3 | Duplicates after a writer restart without a sequence column (acceptable: `last_by(OrderId)` on the raw tables, `DriftEvents` is append-only history) | |
+| 4.3 | AMPS bookmark mode (D17): a reconnect resumes from the store with no re-snapshot; a crash between publish and discard replays at most one flush, which `last_by(OrderId)` absorbs; the bookmark store on shared storage survives a PQ moving nodes | |
+| 4.3b | Whether `sow_delete` and expiry events replay to a bookmark subscriber (60East); the journal's retention against the `Date` window | |
 | 4.4 | `OMS_TRACE.DriftEvents` carries every alert row (`Level = ALERT`) and every transition the lineage emitted | |
 
 ### 5. The real feeds (before cutover, docs/design/09 §6)
