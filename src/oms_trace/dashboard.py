@@ -56,8 +56,8 @@ def build(tables: Mapping[str, Any], settings: config.Settings, tree: bool = Tru
                                   title="Lineage")
         elif root:
             try:
-                nodes, tree = ui_slice.lineage_nodes(tables, [root], settings)
-                tree_panel = ui.panel(ui.table(tree), title=f"Lineage {root}")
+                nodes, tree_table = ui_slice.lineage_nodes(tables, [root], settings)
+                tree_panel = ui.panel(ui.table(tree_table), title=f"Lineage {root}")
             except Exception as exc:  # noqa: BLE001
                 tree_panel = ui.panel(ui.text(f"{type(exc).__name__}: {exc}"), title="Lineage")
         else:
