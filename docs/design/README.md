@@ -38,6 +38,7 @@ execution reports on quantity, price and transaction time (ids do not cross hops
 for edges that already show an aged gap. The resolver, the Barrage-published mapping table and
 the pending-buffer PQ of the original design are not needed.
 
-Related: [`../git-persistent-query-scripts.md`](../git-persistent-query-scripts.md) (how the
+Related: [`../deployment.md`](../deployment.md) (the Podman on-prem deployment runbook and its
+scripts), [`../git-persistent-query-scripts.md`](../git-persistent-query-scripts.md) (how the
 PQ scripts get from Git to the controller) and the `deephaven-fix42-dashboard` repository's
 docs 09, 10 and 14, whose order-tree reconciliation module is the prototype substrate.

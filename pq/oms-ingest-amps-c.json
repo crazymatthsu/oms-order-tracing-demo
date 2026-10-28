@@ -1,0 +1,24 @@
+{
+  "name": "oms-ingest-amps-c",
+  "enabled": false,
+  "description": "AMPS SOW feeds for system C instead of Kafka (docs/design/11 section 5): the in-worker client and the Derived Table Writer into OMS_RAW.OrdersC. Enable this and disable oms-ingest-c when system C publishes to AMPS. OMS_AMPS_PERSIST_SNAPSHOT=true on the first start of a trading day only.",
+  "type": "Live Query - Merge Server",
+  "dispatcher": "merge",
+  "script": "queries/oms_trace/ingest_amps.py",
+  "heap_gb": 4,
+  "daily_restart": "00:05",
+  "restart_attempts": 5,
+  "restart_delay_sec": 30,
+  "init_timeout_sec": 600,
+  "env": {
+    "OMS_SYSTEM": "C",
+    "OMS_AMPS_TOPICS_C": "${OMS_AMPS_TOPICS_C:-}",
+    "OMS_AMPS_URI": "${OMS_AMPS_URI}",
+    "OMS_AMPS_FORMAT": "${OMS_AMPS_FORMAT:-json}",
+    "OMS_AMPS_TAG_MAP": "${OMS_AMPS_TAG_MAP:-}",
+    "OMS_AMPS_PERSIST_SNAPSHOT": "false",
+    "DIS_STORAGE_ROOT": "${DIS_STORAGE_ROOT}",
+    "OMS_TRACE_TZ": "${OMS_TRACE_TZ}",
+    "OMS_TRACE_SRC": "${OMS_TRACE_SRC:-}"
+  }
+}

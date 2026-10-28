@@ -10,3 +10,7 @@ repos.local.env
 *.log
 hs_err_pid*.log
 /tmp/
+
+# deployment: local settings and the generated controller properties fragment
+deploy/deploy.env
+deploy/iris-environment.*.prop
