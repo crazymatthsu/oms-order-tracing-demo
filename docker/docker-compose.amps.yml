@@ -9,12 +9,16 @@
 #     plus amps-python-client), built from the base image and the pip index of repos.env;
 #   * OMS_TRACE_SOURCE=amps: one sow_and_subscribe per topic listed in OMS_AMPS_TOPICS_{A,B,C}.
 #     The server comes up even while AMPS is unreachable; the tables fill once it connects.
+#   * FIX 4.2 bodies (docs/design/11 D18): the standard tags feed the columns of the same name; the
+#     firm's link tags are configured per system with OMS_AMPS_TAG_MAP_{A,B,C} (tag=Column,...).
+#     The demo values below (5011 on A, 5020/5021 on B, 5030/5031 on C) are what the mock publisher
+#     writes; against a real feed put the firm's tags here and the publisher is not used.
 #
 # The `broker` profile adds a local AMPS loaded with docker/amps/amps-config.xml (the ten SOW
-# topics of the mock book, JSON bodies keyed on /OrderId). 60East ships AMPS to licensees, there
+# topics of the mock book, FIX bodies keyed on /37). 60East ships AMPS to licensees, there
 # is no public image: AMPS_IMAGE in repos.env names the one you built or your registry holds.
 # Against your firm's AMPS, drop the profile and set OMS_AMPS_URI (credentials in the URI come
-# from your environment, never from a file in this repo) and the topics.
+# from your environment, never from a file in this repo), the topics and the link tags.
 
 services:
 
@@ -29,13 +33,16 @@ services:
     image: localhost/oms-trace-deephaven-amps:42.5
     environment:
       OMS_TRACE_SOURCE: amps
-      OMS_AMPS_URI: "${OMS_AMPS_URI:-tcp://amps:9007/amps/json}"
+      OMS_AMPS_URI: "${OMS_AMPS_URI:-tcp://amps:9007/amps/fix}"
       OMS_AMPS_TOPICS_A: "${OMS_AMPS_TOPICS_A:-oms.a.t1,oms.a.t2}"
       OMS_AMPS_TOPICS_B: "${OMS_AMPS_TOPICS_B:-oms.b.t1,oms.b.t2,oms.b.t3,oms.b.catchup}"
       OMS_AMPS_TOPICS_C: "${OMS_AMPS_TOPICS_C:-oms.c.t1,oms.c.t2,oms.c.t3,oms.c.stale}"
-      OMS_AMPS_FORMAT: "${OMS_AMPS_FORMAT:-json}"                 # json | fix
-      OMS_AMPS_FIELD_MAP: "${OMS_AMPS_FIELD_MAP:-}"               # json: body field=RawColumn,...
-      OMS_AMPS_TAG_MAP: "${OMS_AMPS_TAG_MAP:-}"                   # fix: tag=RawColumn,... (parent / upstream tags)
+      OMS_AMPS_FORMAT: "${OMS_AMPS_FORMAT:-fix}"                  # fix | json (the broker config and the URI must agree)
+      OMS_AMPS_FIELD_MAP: "${OMS_AMPS_FIELD_MAP:-}"               # json only: body field=RawColumn,...
+      OMS_AMPS_TAG_MAP: "${OMS_AMPS_TAG_MAP:-}"                   # fix: tag=RawColumn,... for every system (over the FIX 4.2 standard tags)
+      OMS_AMPS_TAG_MAP_A: "${OMS_AMPS_TAG_MAP_A:-5011=ParentOrderID}"                    # A: the destination order names its client order
+      OMS_AMPS_TAG_MAP_B: "${OMS_AMPS_TAG_MAP_B:-5020=UpstreamRef,5021=ParentOrderID}"   # B: parents name A's destination order, children their parent
+      OMS_AMPS_TAG_MAP_C: "${OMS_AMPS_TAG_MAP_C:-5030=UpstreamRef,5031=ParentOrderID}"   # C: parents name B's child, children their parent
       OMS_AMPS_HEARTBEAT_SEC: "${OMS_AMPS_HEARTBEAT_SEC:-5}"
       OMS_AMPS_MODE: "${OMS_AMPS_MODE:-sow}"                     # sow (in-worker mirror) | bookmark (transaction-log replay)
       OMS_AMPS_BOOKMARK_DIR: /tmp/oms-amps-bookmarks

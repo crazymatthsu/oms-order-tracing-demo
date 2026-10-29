@@ -178,8 +178,8 @@ def test_a_late_b_child_heals_its_c_parent_in_place(server, settings):
 
     book = mockdata.Book()
     sc = mockdata.family(book, "LIVE")
-    late = [r for r in book.rows["B"] if r["OrderId"] == sc.ids["Bc1"]]
-    first = {s: [r for r in book.rows[s] if not (s == "B" and r["OrderId"] == sc.ids["Bc1"])] for s in config.SYSTEMS}
+    late = [r for r in book.rows["B"] if r["OrderID"] == sc.ids["Bc1"]]
+    first = {s: [r for r in book.rows[s] if not (s == "B" and r["OrderID"] == sc.ids["Bc1"])] for s in config.SYSTEMS}
     its = sources.input_tables()
     for s in config.SYSTEMS:
         its[s].add(sources.raw_table(first[s]))
@@ -269,10 +269,10 @@ def _publish_rows(feed, rows_by_system, skip=()) -> None:
     """Every row as a `publish` on its own topic, stamped with the row's RecvTs (the injected clock)."""
     for system in config.SYSTEMS:
         for row in rows_by_system[system]:
-            if row["OrderId"] in skip:
+            if row["OrderID"] in skip:
                 continue
             feed["clock"]["now"] = row["RecvTs"]
-            feed["handlers"][row["Topic"]](feed["Message"]("publish", _sow_body(row), sow_key=f"{system}:{row['OrderId']}"))
+            feed["handlers"][row["Topic"]](feed["Message"]("publish", _sow_body(row), sow_key=f"{system}:{row['OrderID']}"))
     feed["clock"]["now"] = feed["now"]
 
 
@@ -289,7 +289,7 @@ def amps_feed(server, book, settings):
         clients.append(StubClient())
         return clients[-1]
 
-    env = {"OMS_AMPS_URI": "tcp://stub:9007/amps/json"}
+    env = {"OMS_AMPS_URI": "tcp://stub:9007/amps/json", "OMS_AMPS_FORMAT": "json"}  # the fold tests publish JSON bodies
     env.update({f"OMS_AMPS_TOPICS_{s}": ",".join(settings.topics[s]) for s in config.SYSTEMS})
     amps = amps_sow.AmpsSettings.from_env(env, settings=settings)
     source = amps_sow.AmpsSowSource(settings, amps, client_factory=client_factory, command_factory=StubCommand,
@@ -299,7 +299,7 @@ def amps_feed(server, book, settings):
                                feed_states=source.topics_table())
     # A blink aggregation sees the rows published after it was created, not before (docs/design/04 §10b):
     # the per-system state views must exist before the first message flows, as the DAG's own last_by does.
-    states = {s: source.raw_tables()[s].last_by(["OrderId"]) for s in config.SYSTEMS}
+    states = {s: source.raw_tables()[s].last_by(["OrderID"]) for s in config.SYSTEMS}
     feed = {"source": source, "tables": tables, "states": states, "client": clients[0], "handlers": clients[0].handlers,
             "clock": clock, "now": book.now, "Message": FakeMessage}
     for handler in feed["handlers"].values():  # an empty SOW first: snapshot boundaries on every topic
@@ -356,8 +356,8 @@ def test_amps_publish_heals_a_c_parent_and_an_oof_leaves_a_deleted_state(amps_fe
     tables, handlers, Message = amps_feed["tables"], amps_feed["handlers"], amps_feed["Message"]
     fam = mockdata.Book()
     sc = mockdata.family(fam, "SOWLIVE", recv=book.now - 20 * 60 * mockdata.SEC)
-    late = book_row = [r for r in fam.rows["B"] if r["OrderId"] == sc.ids["Bc1"]][0]
-    _publish_rows(amps_feed, fam.rows, skip={late["OrderId"]})
+    late = book_row = [r for r in fam.rows["B"] if r["OrderID"] == sc.ids["Bc1"]][0]
+    _publish_rows(amps_feed, fam.rows, skip={late["OrderID"]})
 
     def cp():
         return by_key(tables["links_cp"], "OrderId").get(sc.ids["Cp1"], {})
@@ -366,7 +366,7 @@ def test_amps_publish_heals_a_c_parent_and_an_oof_leaves_a_deleted_state(amps_fe
     assert cp()["RootId"] is None
     assert ("C_PARENT", sc.ids["Cp1"]) in by_key(tables["unresolved_links"], "Level", "OrderId")
     amps_feed["clock"]["now"] = late["RecvTs"]
-    handlers[late["Topic"]](Message("publish", _sow_body(late), sow_key=f"B:{late['OrderId']}"))
+    handlers[late["Topic"]](Message("publish", _sow_body(late), sow_key=f"B:{late['OrderID']}"))
     amps_feed["clock"]["now"] = amps_feed["now"]
     assert _wait(lambda: cp().get("ParentState") == "LINKED")
     assert cp()["RootId"] == sc.root_id and cp()["RootState"] == "RESOLVED"
@@ -375,13 +375,13 @@ def test_amps_publish_heals_a_c_parent_and_an_oof_leaves_a_deleted_state(amps_fe
     assert ("C_PARENT", sc.ids["Cp1"]) not in by_key(tables["unresolved_links"], "Level", "OrderId")
     assert by_key(tables["edge_bc_cp"], "OrderId")[sc.ids["Bc1"]]["FillGap"] == 0
     # Cc1a leaves the SOW (an oof with the SowKey only): its last state stays, flagged, and still explains its parent
-    cc = [r for r in fam.rows["C"] if r["OrderId"] == sc.ids["Cc1a"]][0]
-    handlers[cc["Topic"]](Message("oof", sow_key=f"C:{cc['OrderId']}"))
+    cc = [r for r in fam.rows["C"] if r["OrderID"] == sc.ids["Cc1a"]][0]
+    handlers[cc["Topic"]](Message("oof", sow_key=f"C:{cc['OrderID']}"))
     states = amps_feed["states"]["C"]
-    assert _wait(lambda: by_key(states, "OrderId").get(cc["OrderId"], {}).get("SowDeleted") is True)
-    gone = by_key(states, "OrderId")[cc["OrderId"]]
+    assert _wait(lambda: by_key(states, "OrderID").get(cc["OrderID"], {}).get("SowDeleted") is True)
+    gone = by_key(states, "OrderID")[cc["OrderID"]]
     assert gone["CumQty"] == cc["CumQty"] and gone["SowStream"] == "change" and gone["RecvTs"] == amps_feed["now"]
-    assert by_key(tables["links_cc"], "OrderId")[cc["OrderId"]]["CumQty"] == cc["CumQty"]
+    assert by_key(tables["links_cc"], "OrderId")[cc["OrderID"]]["CumQty"] == cc["CumQty"]
     assert by_key(tables["edge_cp_cc"], "OrderId")[sc.ids["Cp1"]]["FillGap"] == 0
     assert sc.root_id not in by_key(tables["drift_by_a_order"], "RootId")
     topics = by_key(tables["feed_health"], "System", "Topic")  # the C channel that carried the oof is still current
@@ -416,7 +416,7 @@ def test_amps_disconnect_and_resnapshot_drive_feed_health(amps_feed):
             if row["SowDeleted"]:
                 continue
             amps_feed["clock"]["now"] = row["RecvTs"]
-            handlers[topic](Message("sow", _sow_body(row), sow_key=f"{system}:{row['OrderId']}"))
+            handlers[topic](Message("sow", _sow_body(row), sow_key=f"{system}:{row['OrderID']}"))
     amps_feed["clock"]["now"] = amps_feed["now"]
     for handler in handlers.values():
         handler(Message("group_end"))
@@ -486,7 +486,7 @@ def test_break_events_and_alerts_follow_the_oracle_step_by_step(server, settings
     mockdata._set(book, "C", trn.ids["Cp2"], CumQty=300, LeavesQty=100)  # 10 s old: TRANSIENT, drift after 30 s
     mockdata._set(book, "C", trn.ids["Cc2a"], CumQty=300, LeavesQty=100)
     late = book.last("B", heal.ids["Bc1"])
-    rows0 = {s: [r for r in book.rows[s] if r["OrderId"] != heal.ids["Bc1"]] for s in config.SYSTEMS}
+    rows0 = {s: [r for r in book.rows[s] if r["OrderID"] != heal.ids["Bc1"]] for s in config.SYSTEMS}
     # a two-family book gets no new rows for six minutes: keep the channel and system staleness rules
     # out of the way (they have their own tests) so the gap, link and drift rules are what is observed
     cfg = mockdata.settings_for(book, settings).with_(unresolved_alert_sec=30, feed_stale_sec=3600, feed_catchup_sec=7200)

@@ -39,8 +39,8 @@ def _rebase(book: mockdata.Book, now_nanos: int) -> mockdata.Book:
     for rows in book.rows.values():
         for r in rows:
             r["RecvTs"] += shift
-            if r.get("EventTs") is not None:
-                r["EventTs"] += shift
+            if r.get("TransactTime") is not None:
+                r["TransactTime"] += shift
             r["Date"] = dates.get(r["Date"], r["Date"])
     book.now = now_nanos
     return book

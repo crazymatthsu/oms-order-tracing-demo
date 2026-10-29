@@ -17,7 +17,7 @@ def test_clean_and_working_and_healthy_families_have_no_breaks(oracle, book):
         if name in ("CLEAN", "WORK", "FAN", "DUP", "MID") or healthy:
             assert kinds_for_root(oracle, sc.root_id) == {}, (name, kinds_for_root(oracle, sc.root_id))
             assert sc.root_id not in oracle.drift_by_a_order
-    assert oracle.drift_by_symbol.get(("AAPL", "BUY", "A-Bp"), {}).get("Breaks", 0) >= 1  # the broken scenarios are AAPL/BUY
+    assert oracle.drift_by_symbol.get(("AAPL", "1", "A-Bp"), {}).get("Breaks", 0) >= 1  # the broken scenarios are AAPL buys
 
 
 def test_missing_at_b(oracle, book):
@@ -141,7 +141,7 @@ def test_mismatch_overfill_duplicates_and_ordering(oracle, book):
     assert gap(oracle, "Cp-Cc", s.ids["Cp1"])["BreakKind"] == "OVERFILL"
     s = book.scenarios["DUP"]
     assert kinds_for_root(oracle, s.root_id) == {}
-    s = book.scenarios["OOO"]  # arrival order wins: the stale SeqNo 1 state (300) is the last word
+    s = book.scenarios["OOO"]  # arrival order wins: the stale MsgSeqNum 1 state (300) is the last word
     assert oracle.nodes["C_CHILD"][s.ids["Cc2a"]]["CumQty"] == 300
     assert gap(oracle, "Cp-Cc", s.ids["Cp2"])["BreakKind"] == "MISSING_DOWNSTREAM"
 
@@ -188,10 +188,10 @@ def test_unresolved_not_alerted_while_parent_system_stale():
     s = mockdata.family(book, "X", recv=mockdata.NOW - 2 * mockdata.HOUR,
                         topics={"A": ("oms.a.t1",), "B": ("oms.b.only",), "C": ("oms.c.t1",)})
     # drop the B child; every B row is 2 h old, so B's only channel is STALE; make C current
-    book.rows["B"] = [r for r in book.rows["B"] if r["OrderId"] != s.ids["Bc1"]]
+    book.rows["B"] = [r for r in book.rows["B"] if r["OrderID"] != s.ids["Bc1"]]
     for r in book.rows["C"] + book.rows["A"]:
         r["RecvTs"] = mockdata.NOW - 30 * mockdata.SEC
-        r["EventTs"] = r["RecvTs"] - 20 * mockdata.MS
+        r["TransactTime"] = r["RecvTs"] - 20 * mockdata.MS
     res = reference.reconcile(book.rows, mockdata.settings_for(book), book.now)
     u = res.unresolved_links[("C_PARENT", s.ids["Cp1"])]
     assert res.system_health["B"] == 1 and u["FeedStale"] and not u["Alerted"] and u["AgeSec"] == 30

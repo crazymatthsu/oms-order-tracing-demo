@@ -10,8 +10,9 @@ window of one flush on a crash). The first start of a trading day replays from E
 snapshot path with OMS_AMPS_PERSIST_SNAPSHOT.
 
 Live Query - Merge Server, Core+ Python. Environment: OMS_SYSTEM (A|B|C), OMS_AMPS_URI (credentials
-from the environment's secret store, never from this file), OMS_AMPS_TOPICS_<X>, OMS_AMPS_FORMAT,
-OMS_AMPS_FIELD_MAP / OMS_AMPS_TAG_MAP, OMS_AMPS_HEARTBEAT_SEC, OMS_TRACE_TZ, DIS_STORAGE_ROOT, and
+from the environment's secret store, never from this file), OMS_AMPS_TOPICS_<X>, OMS_AMPS_FORMAT (fix:
+FIX 4.2 execution reports, D18), OMS_AMPS_TAG_MAP_<X> (this system's link tags, tag=Column,...; the
+standard FIX tags need no mapping), OMS_AMPS_HEARTBEAT_SEC, OMS_TRACE_TZ, DIS_STORAGE_ROOT, and
 OMS_AMPS_PERSIST_SNAPSHOT=true on the first start of a trading day only (the snapshot rows fill the
 empty partition; a restart within the day persists the change rows alone, the DIS already holds
 the states).

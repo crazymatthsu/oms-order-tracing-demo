@@ -12,7 +12,7 @@ def test_topology_is_six_levels_and_five_edges():
     assert [e.expect_one for e in config.EDGES] == [True, True, False, True, False]
     for level in config.LEVELS[1:]:
         assert config.LEVEL_SYSTEM[config.LEVEL_PARENT[level]] == config.PARENT_SYSTEM[level]
-    assert config.LEVEL_LINK_COLUMN["A_DEST"] == "ParentOrderId" and config.LEVEL_LINK_COLUMN["B_PARENT"] == "UpstreamRef"
+    assert config.LEVEL_LINK_COLUMN["A_DEST"] == "ParentOrderID" and config.LEVEL_LINK_COLUMN["B_PARENT"] == "UpstreamRef"
     assert config.SYSTEM_LEVELS["A"] == ("A_ROOT", "A_DEST")
     assert config.load_settings({}).expect_one_edges == ("Cli-Dest", "A-Bp", "Bc-Cp")
 
@@ -28,7 +28,7 @@ def test_env_parsing_and_validation():
     s = config.load_settings({"OMS_TRACE_GAP_AGE_SEC": "45", "OMS_TRACE_AGE_CLOCK": "event",
                               "OMS_TOPICS_B": "oms.b.t1, oms.b.t2", "OMS_TRACE_ONE_TABLE_PER_SYSTEM": "false",
                               "OMS_TRACE_AS_OF": "2026-10-26"})
-    assert s.gap_age_sec == 45 and s.age_column() == "EventTs"
+    assert s.gap_age_sec == 45 and s.age_column() == "TransactTime"
     assert s.topics["B"] == ("oms.b.t1", "oms.b.t2")
     assert s.raw_table_names("Orders", "B") == ["OrdersB_t1", "OrdersB_t2"]
     assert s.raw_table_names("Orders", "A") == ["OrdersA"]  # no topics listed -> one table

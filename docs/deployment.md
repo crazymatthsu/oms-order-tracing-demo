@@ -230,7 +230,7 @@ the feeds.
 | # | Item | Evidence | Outcome |
 |---|---|---|---|
 | 5.1 | `oms_trace.trace_check` on one day of raw rows from each system: no contract violations (null parent id = parent, children carry no `UpstreamRef`) | report | |
-| 5.2 | The body format and tags: 5011 on A's destination orders, B's and C's parent and upstream references | tag / field map in `deploy.env` | |
+| 5.2 | The link tags per system (docs/design/11 D18): 5011 on A's destination orders, B's and C's `UpstreamRef` and `ParentOrderID` tags, and whether any system keys on 11 rather than 37 | `OMS_AMPS_TAG_MAP_{A,B,C}` in `deploy.env`; the ingester PQ refuses to start without them | |
 | 5.3 | Resolution rate per hop ≥ 99.9 % once lag settles; `DestMinusCli` and `CParentsMinusBChildren` sit at zero | `trace_check`, `trace_stats` | |
 | 5.4 | Each topic's longest silence on a normal day, to set `OMS_TRACE_FEED_STALE_SEC` (a quiet channel needs a producer heartbeat or a longer threshold) | `trace_check` topics | |
 | 5.5 | Tag 60 comparable across systems (GMT) for `OMS_TRACE_AGE_CLOCK=event` and the `CATCHING_UP` rule | spot checks | |

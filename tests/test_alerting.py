@@ -86,7 +86,7 @@ def test_transitions_on_a_healing_family():
     fam = mockdata.Book()
     sc = mockdata.family(fam, "T", recv=mockdata.NOW - 60 * SEC)  # a minute old: aged past TRANSIENT, channels current
     cfg = mockdata.settings_for(fam)
-    before = {s: [r for r in fam.rows[s] if r["OrderId"] != sc.ids["Bc1"]] for s in config.SYSTEMS}
+    before = {s: [r for r in fam.rows[s] if r["OrderID"] != sc.ids["Bc1"]] for s in config.SYSTEMS}
     prev = reference.reconcile(before, cfg, fam.now)
     cur = reference.reconcile(fam.rows, cfg, fam.now)
     links = alerting.link_transitions(prev.unresolved_links, cur.unresolved_links, fam.now)

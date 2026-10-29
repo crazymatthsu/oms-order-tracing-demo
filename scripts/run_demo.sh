@@ -42,9 +42,10 @@ case "${1:-up}" in
     ;;
   publish-amps)
     # the client library lives in the derived image; publish from inside the container (no absolute
-    # path arguments, so Git Bash needs no MSYS_NO_PATHCONV)
+    # path arguments, so Git Bash needs no MSYS_NO_PATHCONV). The publisher reads OMS_AMPS_FORMAT and
+    # OMS_AMPS_TAG_MAP_{A,B,C} from the container's environment, so it writes the tags the source expects.
     "$CLI" exec "${DH_CONTAINER:-oms-trace-deephaven}" python -m oms_trace.amps_publish \
-      --uri "${OMS_AMPS_URI:-tcp://amps:9007/amps/json}" --mock --seed "${OMS_TRACE_MOCK_SEED:-42}" --families "${OMS_TRACE_MOCK_FAMILIES:-24}"
+      --uri "${OMS_AMPS_URI:-tcp://amps:9007/amps/fix}" --mock --seed "${OMS_TRACE_MOCK_SEED:-42}" --families "${OMS_TRACE_MOCK_FAMILIES:-24}"
     ;;
   down-amps) "${COMPOSE[@]}" -f "$COMPOSE_FILE" -f "$AMPS_OVERLAY" --profile broker down ;;
   status) "${COMPOSE[@]}" -f "$COMPOSE_FILE" ps ;;

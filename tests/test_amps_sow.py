@@ -19,8 +19,12 @@ from oms_trace.amps_sow import CHANGE, SNAPSHOT, AmpsSettings, TopicMirror
 
 SEC = config.SECOND_NANOS
 NY = ZoneInfo("America/New_York")
+# JSON bodies for the fold tests (the body() helper below); the FIX tests set OMS_AMPS_FORMAT=fix and the
+# link tags of B and C (A keeps its default 5011=ParentOrderID).
 BASE_ENV = {"OMS_AMPS_URI": "tcp://amps-a:9007/amps/json, tcp://user:secret@amps-b:9007/amps/json",
-            "OMS_AMPS_TOPICS_A": "oms.a.t1", "OMS_AMPS_TOPICS_B": "oms.b.t1, oms.b.t2", "OMS_AMPS_TOPICS_C": "oms.c.t1"}
+            "OMS_AMPS_TOPICS_A": "oms.a.t1", "OMS_AMPS_TOPICS_B": "oms.b.t1, oms.b.t2", "OMS_AMPS_TOPICS_C": "oms.c.t1",
+            "OMS_AMPS_FORMAT": "json"}
+FIX_LINK_TAGS = {"OMS_AMPS_TAG_MAP_B": "5020=UpstreamRef,5021=ParentOrderID", "OMS_AMPS_TAG_MAP_C": "5030=UpstreamRef,5031=ParentOrderID"}
 
 
 def real_message(command: str, data: Optional[str] = None, sow_key: str = "") -> Any:
@@ -41,10 +45,10 @@ def body(order_id: str, *, qty: int = 1000, cum: int = 0, parent: Optional[str] 
          date_: Optional[str] = None, **extra: Any) -> str:
     import json
 
-    fields: Dict[str, Any] = {"OrderId": order_id, "Symbol": "AAPL", "Side": "BUY", "OrderQty": qty, "CumQty": cum,
-                              "LeavesQty": qty - cum, "OrdStatus": "NEW" if cum == 0 else "PARTIALLY_FILLED",
-                              "EventTs": "2026-10-26T14:59:59.980Z", "SeqNo": 1,
-                              "ParentOrderId": parent, "UpstreamRef": upstream}
+    fields: Dict[str, Any] = {"OrderID": order_id, "Symbol": "AAPL", "Side": "1", "OrderQty": qty, "CumQty": cum,
+                              "LeavesQty": qty - cum, "OrdStatus": "0" if cum == 0 else "1",
+                              "TransactTime": "2026-10-26T14:59:59.980Z", "MsgSeqNum": 1,
+                              "ParentOrderID": parent, "UpstreamRef": upstream}
     if date_:
         fields["Date"] = date_
     fields.update(extra)
@@ -60,11 +64,12 @@ def test_settings_from_env_defaults_fallbacks_and_masking():
     assert a.topics == {"A": ("oms.a.t1",), "B": ("oms.b.t1", "oms.b.t2"), "C": ("oms.c.t1",)}
     assert a.subscriptions() == [("A", "oms.a.t1"), ("B", "oms.b.t1"), ("B", "oms.b.t2"), ("C", "oms.c.t1")]
     assert a.client_name == "dh-oms-trace" and a.heartbeat_sec == 5 and a.body_format == "json"
-    assert a.tag_map["37"] == "OrderId" and a.field_map == {} and a.persist_snapshot is False
+    assert a.tag_map["37"] == "OrderID" and a.field_map == {} and a.persist_snapshot is False
     assert a.tz == "America/New_York"
     assert "secret" not in a.describe() and "****" in a.describe()
     # the topics fall back to the Kafka topic lists, the zone follows OMS_TRACE_TZ
-    env = {"OMS_AMPS_URI": "tcp://h:9007/amps/json", "OMS_TOPICS_B": "k.b.1", "OMS_TRACE_TZ": "Europe/London"}
+    env = {"OMS_AMPS_URI": "tcp://h:9007/amps/json", "OMS_TOPICS_B": "k.b.1", "OMS_TRACE_TZ": "Europe/London",
+           "OMS_AMPS_FORMAT": "json"}
     b = AmpsSettings.from_env(env)
     assert b.topics == {"A": (), "B": ("k.b.1",), "C": ()} and b.tz == "Europe/London"
     only_b = a.for_system("B")
@@ -72,12 +77,15 @@ def test_settings_from_env_defaults_fallbacks_and_masking():
 
 
 def test_settings_maps_and_validation():
-    env = dict(BASE_ENV, OMS_AMPS_FORMAT="fix", OMS_AMPS_TAG_MAP="26009=ParentOrderId, 26010=UpstreamRef",
-               OMS_AMPS_FIELD_MAP="ClOrdID=OrderId", OMS_AMPS_HEARTBEAT_SEC="0", OMS_AMPS_PERSIST_SNAPSHOT="true")
+    env = dict(BASE_ENV, OMS_AMPS_FORMAT="fix", OMS_AMPS_TAG_MAP="26009=ParentOrderID, 26010=UpstreamRef",
+               OMS_AMPS_FIELD_MAP="Id=OrderID", OMS_AMPS_HEARTBEAT_SEC="0", OMS_AMPS_PERSIST_SNAPSHOT="true")
     a = AmpsSettings.from_env(env)
     assert a.body_format == "fix" and a.heartbeat_sec == 0 and a.persist_snapshot is True
-    assert a.tag_map["26009"] == "ParentOrderId" and a.tag_map["26010"] == "UpstreamRef" and a.tag_map["14"] == "CumQty"
-    assert a.field_map == {"ClOrdID": "OrderId"}
+    assert a.tag_map["26009"] == "ParentOrderID" and a.tag_map["26010"] == "UpstreamRef" and a.tag_map["14"] == "CumQty"
+    assert a.field_map == {"Id": "OrderID"}
+    # OMS_AMPS_TAG_MAP applies to every system; A's own default 5011 stays beside it
+    assert a.link_tags("B") == {"ParentOrderID": "26009", "UpstreamRef": "26010"}
+    assert a.tag_map_for("A")["5011"] == "ParentOrderID" and a.tag_map_for("A")["26009"] == "ParentOrderID"
     for bad in ({"OMS_AMPS_URI": ""}, {"OMS_AMPS_FORMAT": "xml"}, {"OMS_AMPS_HEARTBEAT_SEC": "-1"},
                 {"OMS_AMPS_FIELD_MAP": "x=NoSuchColumn"}, {"OMS_AMPS_TAG_MAP": "99=RecvTs"},
                 {"OMS_AMPS_TAG_MAP": "garbage"}, {"OMS_AMPS_PERSIST_SNAPSHOT": "maybe"}, {"OMS_AMPS_BATCH_SIZE": "0"}):
@@ -92,17 +100,17 @@ def test_settings_maps_and_validation():
 
 
 def test_json_body_to_raw_row_stamps_arrival_and_derives_the_date():
-    a = AmpsSettings.from_env(dict(BASE_ENV, OMS_AMPS_FIELD_MAP="ClOrdID=OrderId,Qty=OrderQty"))
+    a = AmpsSettings.from_env(dict(BASE_ENV, OMS_AMPS_FIELD_MAP="Id=OrderID,Qty=OrderQty"))
     parse = amps_sow.make_parser(a)
-    fields = parse('{"ClOrdID": "B-1", "Qty": "500", "CumQty": 200.0, "LeavesQty": 300, "Side": "BUY", "Symbol": "MSFT",'
-                   ' "EventTs": 1792861199980000000, "ParentOrderId": null, "UpstreamRef": "A-1", "Topic": "spoofed",'
+    fields = parse('{"Id": "B-1", "Qty": "500", "CumQty": 200.0, "LeavesQty": 300, "Side": "1", "Symbol": "MSFT",'
+                   ' "TransactTime": 1792861199980000000, "ParentOrderID": null, "UpstreamRef": "A-1", "Topic": "spoofed",'
                    ' "KafkaOffset": 7, "Ignored": 1}')
     recv = mockdata.NOW  # 2026-10-26T15:00Z = 11:00 New York
     row = amps_sow.raw_row("B", "oms.b.t1", fields, recv, NY)
     assert set(row) == set(config.RAW_COLUMN_NAMES)
-    assert row["OrderId"] == "B-1" and row["OrderQty"] == 500 and row["CumQty"] == 200 and row["LeavesQty"] == 300
-    assert row["UpstreamRef"] == "A-1" and row["ParentOrderId"] is None
-    assert row["EventTs"] == 1792861199980000000 and row["RecvTs"] == recv
+    assert row["OrderID"] == "B-1" and row["OrderQty"] == 500 and row["CumQty"] == 200 and row["LeavesQty"] == 300
+    assert row["UpstreamRef"] == "A-1" and row["ParentOrderID"] is None
+    assert row["TransactTime"] == 1792861199980000000 and row["RecvTs"] == recv
     assert row["Topic"] == "oms.b.t1" and row["KafkaOffset"] is None and row["KafkaPartition"] is None
     assert row["Date"] == "2026-10-26" and row["SowDeleted"] is False
     # 03:00Z is still the previous trading date in New York; a Date in the body wins over the clock
@@ -110,24 +118,27 @@ def test_json_body_to_raw_row_stamps_arrival_and_derives_the_date():
     assert amps_sow.raw_row("B", "t", fields, night, NY)["Date"] == "2026-10-25"
     assert amps_sow.raw_row("B", "t", dict(fields, Date="2026-10-24"), night, NY)["Date"] == "2026-10-24"
     with pytest.raises(ValueError):
-        amps_sow.raw_row("B", "t", {"Symbol": "X"}, recv, NY)  # no OrderId
+        amps_sow.raw_row("B", "t", {"Symbol": "X"}, recv, NY)  # no OrderID
     with pytest.raises(ValueError):
-        amps_sow.raw_row("B", "t", {"OrderId": "B-2", "CumQty": "12.5"}, recv, NY)  # not a whole number
+        amps_sow.raw_row("B", "t", {"OrderID": "B-2", "CumQty": "12.5"}, recv, NY)  # not a whole number
     with pytest.raises(ValueError):
         parse("[1, 2]")
 
 
 def test_fix_body_through_the_tag_map_and_tag60_timestamps():
-    a = AmpsSettings.from_env(dict(BASE_ENV, OMS_AMPS_FORMAT="fix", OMS_AMPS_TAG_MAP="26009=ParentOrderId,26010=UpstreamRef"))
-    parse = amps_sow.make_parser(a)
+    a = AmpsSettings.from_env(dict(BASE_ENV, OMS_AMPS_FORMAT="fix", OMS_AMPS_TAG_MAP="26009=ParentOrderID,26010=UpstreamRef"))
+    parse = amps_sow.make_parser(a, "C")
     soh = "\x01"
-    fields = parse(soh.join(["37=Cc-1", "55=NVDA", "54=1", "38=400", "14=150", "151=250", "6=101.25", "39=1",
-                             "60=20261026-14:59:59.980", "26009=Cp-1", "34=17", "9999=ignored"]))
+    # a whole execution report: header and trailer tags are skipped, unknown tags ignored
+    fields = parse(soh.join(["8=FIX.4.2", "9=178", "35=8", "49=OMS-C", "56=DROPCOPY", "34=17", "52=20261026-14:59:59.990",
+                             "37=Cc-1", "11=cl-Cc-1", "17=exec-9", "150=1", "55=NVDA", "54=1", "38=400", "14=150",
+                             "151=250", "6=101.25", "39=1", "60=20261026-14:59:59.980", "26009=Cp-1", "9999=ignored", "10=123"]))
     row = amps_sow.raw_row("C", "oms.c.t1", fields, mockdata.NOW, NY)
-    assert row["OrderId"] == "Cc-1" and row["ParentOrderId"] == "Cp-1" and row["UpstreamRef"] is None
+    assert row["OrderID"] == "Cc-1" and row["ParentOrderID"] == "Cp-1" and row["UpstreamRef"] is None
+    assert row["ClOrdID"] == "cl-Cc-1" and row["MsgType"] == "8" and row["ExecType"] == "1" and row["OrigClOrdID"] is None
     assert row["OrderQty"] == 400 and row["CumQty"] == 150 and row["LeavesQty"] == 250 and row["AvgPx"] == 101.25
-    assert row["Side"] == "1" and row["OrdStatus"] == "1" and row["SeqNo"] == 17  # codes pass through untranslated (Q13)
-    assert row["EventTs"] == mockdata.NOW - 20 * 1_000_000
+    assert row["Side"] == "1" and row["OrdStatus"] == "1" and row["MsgSeqNum"] == 17  # codes pass through untranslated (Q13)
+    assert row["TransactTime"] == mockdata.NOW - 20 * 1_000_000
     assert parse("37=X|14=1")["CumQty"] == "1"  # pipe delimited is accepted too
     with pytest.raises(ValueError):
         parse("37=X|garbage")
@@ -141,8 +152,8 @@ def test_fix_body_through_the_tag_map_and_tag60_timestamps():
 
 
 def mirror(fmt: str = "json") -> TopicMirror:
-    a = AmpsSettings.from_env(dict(BASE_ENV, OMS_AMPS_FORMAT=fmt))
-    return TopicMirror("B", "oms.b.t1", amps_sow.make_parser(a), NY)
+    a = AmpsSettings.from_env({**BASE_ENV, **FIX_LINK_TAGS, "OMS_AMPS_FORMAT": fmt})
+    return TopicMirror("B", "oms.b.t1", amps_sow.make_parser(a, "B"), NY)
 
 
 @pytest.mark.parametrize("msg", MESSAGE_FACTORIES)
@@ -152,31 +163,31 @@ def test_snapshot_publish_delete_and_reconnect_fold(msg):
     assert m.on_message(msg("group_begin"), t) == [] and m.epoch == 1 and m.in_snapshot
     out = m.on_message(msg("sow", body("Bp-1", upstream="A-1"), sow_key="k1"), t + 1)
     out += m.on_message(msg("sow", body("Bc-1", parent="Bp-1", cum=100), sow_key="k2"), t + 2)
-    assert [(r["OrderId"], s) for r, s in out] == [("Bp-1", SNAPSHOT), ("Bc-1", SNAPSHOT)]
+    assert [(r["OrderID"], s) for r, s in out] == [("Bp-1", SNAPSHOT), ("Bc-1", SNAPSHOT)]
     assert m.on_message(msg("group_end"), t + 3) == [] and not m.in_snapshot and m.counts["snapshots"] == 1
     # a new full state is a change row; the mirror keeps the latest state per order
     out = m.on_message(msg("publish", body("Bc-1", parent="Bp-1", cum=400), sow_key="k2"), t + 4)
-    assert [(r["OrderId"], r["CumQty"], s) for r, s in out] == [("Bc-1", 400, CHANGE)]
+    assert [(r["OrderID"], r["CumQty"], s) for r, s in out] == [("Bc-1", 400, CHANGE)]
     assert m.records["Bc-1"]["CumQty"] == 400 and m.records["Bc-1"]["RecvTs"] == t + 4
     # a third child arrives, then the first child leaves the SOW (oof carries the SowKey only)
     m.on_message(msg("publish", body("Bc-3", parent="Bp-1", cum=50), sow_key="k3"), t + 5)
     out = m.on_message(msg("oof", sow_key="k2"), t + 6)
     assert len(out) == 1 and out[0][1] == CHANGE
     gone = out[0][0]
-    assert gone["OrderId"] == "Bc-1" and gone["SowDeleted"] is True and gone["CumQty"] == 400 and gone["RecvTs"] == t + 6
+    assert gone["OrderID"] == "Bc-1" and gone["SowDeleted"] is True and gone["CumQty"] == 400 and gone["RecvTs"] == t + 6
     assert m.on_message(msg("oof", sow_key="k2"), t + 7) == []  # already gone: nothing more
     assert m.counts["delete"] == 1 and m.live() == 2 and len(m.records) == 3
     # a sow_delete without a SowKey but with the record's body
     out = m.on_message(msg("sow_delete", body("Bc-3", parent="Bp-1", cum=50)), t + 8)
-    assert [(r["OrderId"], r["SowDeleted"]) for r, _ in out] == [("Bc-3", True)]
+    assert [(r["OrderID"], r["SowDeleted"]) for r, _ in out] == [("Bc-3", True)]
     # reconnect: the new snapshot re-sends Bp-1 only; Bc-2 (published meanwhile) was deleted while away
     m.on_message(msg("publish", body("Bc-2", parent="Bp-1", cum=10), sow_key="k4"), t + 9)
     assert m.live() == 2
     assert m.on_message(msg("group_begin"), t + 10) == [] and m.epoch == 2 and m.in_snapshot
     out = m.on_message(msg("sow", body("Bp-1", upstream="A-1", cum=410), sow_key="k1"), t + 11)
-    assert [(r["OrderId"], s) for r, s in out] == [("Bp-1", SNAPSHOT)]
+    assert [(r["OrderID"], s) for r, s in out] == [("Bp-1", SNAPSHOT)]
     out = m.on_message(msg("group_end"), t + 12)
-    assert [(r["OrderId"], r["SowDeleted"], r["CumQty"], s) for r, s in out] == [("Bc-2", True, 10, CHANGE)]
+    assert [(r["OrderID"], r["SowDeleted"], r["CumQty"], s) for r, s in out] == [("Bc-2", True, 10, CHANGE)]
     assert m.counts["dropped"] == 1 and m.counts["snapshots"] == 2 and m.live() == 1
     # the already-deleted records are not re-emitted by the drop, and ignored commands do nothing
     assert m.on_message(msg("ack"), t + 13) == [] and m.on_message(msg("heartbeat"), t + 14) == []
@@ -192,18 +203,18 @@ def test_delta_publish_merges_and_garbage_is_rejected_not_fatal():
     m.on_message(FakeMessage("group_begin"), t)
     m.on_message(FakeMessage("sow", body("Bc-1", parent="Bp-1", qty=1000, cum=100), sow_key="k2"), t + 1)
     m.on_message(FakeMessage("group_end"), t + 2)
-    out = m.on_message(FakeMessage("delta_publish", '{"OrderId": "Bc-1", "CumQty": 300, "LeavesQty": 700}', sow_key="k2"), t + 3)
+    out = m.on_message(FakeMessage("delta_publish", '{"OrderID": "Bc-1", "CumQty": 300, "LeavesQty": 700}', sow_key="k2"), t + 3)
     row = out[0][0]
-    assert row["CumQty"] == 300 and row["LeavesQty"] == 700 and row["OrderQty"] == 1000 and row["ParentOrderId"] == "Bp-1"
+    assert row["CumQty"] == 300 and row["LeavesQty"] == 700 and row["OrderQty"] == 1000 and row["ParentOrderID"] == "Bp-1"
     assert row["Symbol"] == "AAPL" and row["RecvTs"] == t + 3 and row["SowDeleted"] is False
     # garbage: a non-JSON body, a body without an order id, a non-numeric quantity
-    for bad in ("not json", '{"Symbol": "X"}', '{"OrderId": "Bc-9", "CumQty": "lots"}'):
+    for bad in ("not json", '{"Symbol": "X"}', '{"OrderID": "Bc-9", "CumQty": "lots"}'):
         assert m.on_message(FakeMessage("publish", bad, sow_key="k9"), t + 4) == []
     assert m.counts["rejected"] == 3 and "CumQty" in (m.last_error or "")
     assert m.live() == 1
     # an oof for a record never seen live still records its last state as deleted
     out = m.on_message(FakeMessage("oof", body("Bc-7", parent="Bp-1", cum=5), sow_key="k7"), t + 5)
-    assert [(r["OrderId"], r["SowDeleted"]) for r, _ in out] == [("Bc-7", True)]
+    assert [(r["OrderID"], r["SowDeleted"]) for r, _ in out] == [("Bc-7", True)]
     assert m.on_message(FakeMessage("oof", sow_key="unknown-key"), t + 6) == []
 
 
@@ -211,9 +222,40 @@ def test_fix_bodies_fold_the_same_way():
     m = mirror("fix")
     t = mockdata.NOW
     m.on_message(FakeMessage("group_begin"), t)
-    out = m.on_message(FakeMessage("sow", "37=Bp-1|38=1000|14=0|151=1000|55=AAPL|54=1|39=0", sow_key="k1"), t + 1)
-    assert out[0][0]["OrderId"] == "Bp-1" and out[0][0]["ParentOrderId"] is None  # no parent tag mapped: a parent
-    assert m.on_message(FakeMessage("group_end"), t + 2) == []
+    out = m.on_message(FakeMessage("sow", "37=Bp-1|38=1000|14=0|151=1000|55=AAPL|54=1|39=0|5020=Dest-1", sow_key="k1"), t + 1)
+    assert out[0][0]["OrderID"] == "Bp-1" and out[0][0]["ParentOrderID"] is None  # no parent tag: a parent
+    assert out[0][0]["UpstreamRef"] == "Dest-1"  # B's own upstream tag (OMS_AMPS_TAG_MAP_B)
+    out = m.on_message(FakeMessage("publish", "37=Bc-1|38=400|14=0|151=400|55=AAPL|54=1|39=0|5021=Bp-1", sow_key="k2"), t + 2)
+    assert out[0][0]["ParentOrderID"] == "Bp-1" and out[0][0]["UpstreamRef"] is None
+    assert m.on_message(FakeMessage("group_end"), t + 3) == []
+
+
+def test_fix_is_the_default_and_link_tags_are_per_system():
+    env = {k: v for k, v in BASE_ENV.items() if k != "OMS_AMPS_FORMAT"}
+    with pytest.raises(config.SettingsError, match="OMS_AMPS_TAG_MAP_B: no FIX tag feeds ParentOrderID, UpstreamRef"):
+        AmpsSettings.from_env(env)  # fix is the default; B has topics and no link tags
+    a = AmpsSettings.from_env(dict(env, **FIX_LINK_TAGS))
+    assert a.body_format == "fix"
+    assert a.link_tags("A") == {"ParentOrderID": "5011"}
+    assert a.link_tags("B") == {"ParentOrderID": "5021", "UpstreamRef": "5020"}
+    assert a.link_tags("C") == {"ParentOrderID": "5031", "UpstreamRef": "5030"}
+    # the standard FIX 4.2 tags feed every system; a system's own map overrides them tag by tag
+    for system in config.SYSTEMS:
+        assert all(a.tag_map_for(system)[tag] == col for tag, col in config.FIX42_TAGS.items())
+    b = AmpsSettings.from_env({**env, **FIX_LINK_TAGS, "OMS_AMPS_TAG_MAP_C": "11=OrderID,5030=UpstreamRef,5031=ParentOrderID"})
+    assert b.tag_map_for("C")["11"] == "OrderID" and b.tag_map_for("B")["11"] == "ClOrdID"
+    assert "B: ParentOrderID<-5021, UpstreamRef<-5020" in a.describe()
+    # a system without topics needs no link tags; one with topics but a map for another system still fails
+    AmpsSettings.from_env({"OMS_AMPS_URI": "tcp://h:9007/amps/fix", "OMS_AMPS_TOPICS_A": "oms.a.t1"})
+    with pytest.raises(config.SettingsError, match="OMS_AMPS_TAG_MAP_C"):
+        AmpsSettings.from_env({"OMS_AMPS_URI": "tcp://h:9007/amps/fix", "OMS_AMPS_TOPICS_C": "oms.c.t1",
+                               "OMS_AMPS_TAG_MAP_B": FIX_LINK_TAGS["OMS_AMPS_TAG_MAP_B"]})
+    # OrderID itself can be re-pointed, but never removed
+    with pytest.raises(config.SettingsError, match="no FIX tag feeds OrderID"):
+        AmpsSettings.from_env({"OMS_AMPS_URI": "tcp://h:9007/amps/fix", "OMS_AMPS_TOPICS_A": "oms.a.t1",
+                               "OMS_AMPS_TAG_MAP_A": "37=ClOrdID"})
+    # per-system maps go through for_system unchanged
+    assert a.for_system("C").link_tags("C") == a.link_tags("C")
 
 
 # -- the source around a stub client ---------------------------------------------------------------
@@ -256,9 +298,9 @@ def test_source_subscribes_every_topic_routes_rows_per_system_and_tracks_the_con
         h(FakeMessage("group_end"))
     b2(FakeMessage("publish", body("Bc-1", parent="Bp-1", cum=10), sow_key="b2"))
     rows_b = source.buffers["B"].drain()
-    assert [(r["OrderId"], r["Topic"], s, e) for r, s, e, *_ in rows_b] == [
+    assert [(r["OrderID"], r["Topic"], s, e) for r, s, e, *_ in rows_b] == [
         ("Bp-1", "oms.b.t1", SNAPSHOT, 1), ("Bc-1", "oms.b.t2", SNAPSHOT, 1), ("Bc-1", "oms.b.t2", CHANGE, 1)]
-    assert [(r["OrderId"], s) for r, s, *_ in source.buffers["A"].drain()] == [("A-1", SNAPSHOT)]
+    assert [(r["OrderID"], s) for r, s, *_ in source.buffers["A"].drain()] == [("A-1", SNAPSHOT)]
     assert source.buffers["C"].drain() == []
     # snapshot boundaries publish status rows: in progress, then complete
     status = source.status_buffer.drain()
@@ -275,7 +317,7 @@ def test_source_subscribes_every_topic_routes_rows_per_system_and_tracks_the_con
     b2(FakeMessage("group_begin"))
     b2(FakeMessage("group_end"))
     dropped = source.buffers["B"].drain()
-    assert [(r["OrderId"], r["SowDeleted"], s, e) for r, s, e, *_ in dropped] == [("Bc-1", True, CHANGE, 2)]
+    assert [(r["OrderID"], r["SowDeleted"], s, e) for r, s, e, *_ in dropped] == [("Bc-1", True, CHANGE, 2)]
     assert [r["Topic"] for r in source.status()] == ["oms.a.t1", "oms.b.t1", "oms.b.t2", "oms.c.t1"]
     assert all(r["Connected"] for r in source.status())
     source.stop()
@@ -310,26 +352,56 @@ def test_start_source_is_idempotent_per_client_name(monkeypatch):
 def test_date_window_of_the_source_follows_the_arrival_date():
     # the source stamps Date in OMS_TRACE_TZ, the DAG windows on settings.dates(): both use the same zone
     recv = mockdata.NOW
-    row = amps_sow.raw_row("A", "t", {"OrderId": "A-1"}, recv, ZoneInfo("Asia/Tokyo"))
+    row = amps_sow.raw_row("A", "t", {"OrderID": "A-1"}, recv, ZoneInfo("Asia/Tokyo"))
     assert row["Date"] == "2026-10-27"  # 15:00Z is already the 27th in Tokyo
     assert date.fromisoformat(row["Date"]).isoformat() in config.Settings(as_of=date(2026, 10, 26)).dates()
 
 
-def test_publisher_bodies_round_trip_through_the_source(book):
+@pytest.mark.parametrize("fmt", ["fix", "json"])
+def test_publisher_bodies_round_trip_through_the_source(book, fmt):
     """What amps_publish sends, the source reads back as the same contract values (minus the stamped columns)."""
     from oms_trace import amps_publish
 
-    a = AmpsSettings.from_env(BASE_ENV)
-    parse = amps_sow.make_parser(a)
-    items = list(amps_publish.messages(book.rows))
+    env = {**BASE_ENV, **FIX_LINK_TAGS, "OMS_AMPS_FORMAT": fmt}
+    a = AmpsSettings.from_env(env)
+    encoding = amps_publish.Encoding.from_env(env)
+    assert encoding.body_format == fmt
+    items = list(amps_publish.messages(book.rows, encoding))
     assert len(items) == len(book.all_rows()) and items[0][0] == book.rows["A"][0]["Topic"]
     for row, (topic, body_text) in zip(book.all_rows(), items):
-        back = amps_sow.raw_row(row["Topic"][4].upper(), topic, parse(body_text), row["RecvTs"], NY)
+        system = row["Topic"][4].upper()
+        back = amps_sow.raw_row(system, topic, amps_sow.make_parser(a, system)(body_text), row["RecvTs"], NY)
         for col in config.RAW_COLUMN_NAMES:
             if col in ("KafkaPartition", "KafkaOffset", "SowDeleted"):
                 continue
-            assert back[col] == row[col], (row["OrderId"], col, back[col], row[col])
+            assert back[col] == row[col], (fmt, row["OrderID"], col, back[col], row[col])
         assert back["SowDeleted"] is False and back["KafkaOffset"] is None
+
+
+def test_fix_bodies_are_well_formed_and_carry_the_configured_link_tags(book):
+    from oms_trace import amps_publish
+
+    encoding = amps_publish.Encoding.from_env({**FIX_LINK_TAGS, "OMS_AMPS_FORMAT": "fix"})
+    sc = book.scenarios["MB"] if "MB" in book.scenarios else next(iter(book.scenarios.values()))
+    bc = book.last("B", sc.ids["Bc1"])
+    text = encoding.body("B", bc)
+    fields = dict(part.split("=", 1) for part in text.split("\x01") if part)
+    assert text.startswith("8=FIX.4.2\x019=") and text.endswith("\x01") and list(fields)[-1] == "10"
+    body = text[text.index("35="):text.rindex("10=")]
+    assert int(fields["9"]) == len(body.encode()) and int(fields["10"]) == sum(text[:text.rindex("10=")].encode()) % 256
+    assert fields["35"] == "8" and fields["37"] == bc["OrderID"] and fields["11"] == bc["ClOrdID"] and fields["150"] == bc["ExecType"]
+    assert fields["5021"] == bc["ParentOrderID"] and "5020" not in fields  # a child: its parent, no upstream
+    assert fields["75"] == bc["Date"].replace("-", "") and fields["60"] == amps_sow.format_fix_time(bc["TransactTime"])
+    bp = book.last("B", sc.ids["Bp"])
+    bp_fields = dict(part.split("=", 1) for part in encoding.body("B", bp).split("\x01") if part)
+    assert bp_fields["5020"] == bp["UpstreamRef"] and "5021" not in bp_fields  # a parent: its upstream, no parent
+    # the publisher refuses a system whose link tags are not configured, like the source does
+    with pytest.raises(config.SettingsError, match="OMS_AMPS_TAG_MAP_C"):
+        amps_publish.Encoding.from_env({"OMS_AMPS_FORMAT": "fix", "OMS_AMPS_TAG_MAP_B": FIX_LINK_TAGS["OMS_AMPS_TAG_MAP_B"]})
+    # --tag-map-x overrides the environment for that system
+    e2 = amps_publish.Encoding.from_env({**FIX_LINK_TAGS}, overrides={"C": "7000=UpstreamRef,7001=ParentOrderID"})
+    assert e2.columns_to_tags("C")["UpstreamRef"] == "7000" and e2.columns_to_tags("B")["UpstreamRef"] == "5020"
+    assert e2.key_filter("X-1") == "/37 = 'X-1'"
 
 
 # -- bookmark mode (docs/design/11 section 5, D17) -------------------------------------------------------
@@ -372,7 +444,7 @@ def test_bookmark_mode_subscribes_from_the_store_and_discards_after_publish():
                        bookmark=f"7|{i}|", sub_id="dh-oms-trace:oms.b.t1"))
     assert store.discarded == []  # nothing discarded before the rows are published
     items = source.drain_and_ack("B")
-    assert [(it[0]["OrderId"], it[1], it[3]) for it in items] == [("Bp-1", CHANGE, "7|1|"), ("Bc-1", CHANGE, "7|2|"), ("Bc-1", CHANGE, "7|3|")]
+    assert [(it[0]["OrderID"], it[1], it[3]) for it in items] == [("Bp-1", CHANGE, "7|1|"), ("Bc-1", CHANGE, "7|2|"), ("Bc-1", CHANGE, "7|3|")]
     assert [m.get_bookmark() for m in store.discarded] == ["7|1|", "7|2|", "7|3|"] and source.discarded == 3
     assert store.recent["dh-oms-trace:oms.b.t1"] == "7|3|"
     assert source.mirrors[("B", "oms.b.t1")].last_bookmark == "7|3|" and source.mirrors[("B", "oms.b.t1")].epoch == 0

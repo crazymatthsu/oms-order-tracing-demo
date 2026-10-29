@@ -26,11 +26,11 @@ LEVEL_PARENT: Dict[str, str] = {"A_DEST": "A_ROOT", "B_PARENT": "A_DEST", "B_CHI
                                 "C_CHILD": "C_PARENT"}
 #: Child level -> the raw column that carries its parent's id (cross-system or in-system).
 LEVEL_LINK_COLUMN: Dict[str, str] = {
-    "A_DEST": "ParentOrderId",     # tag 5011: the client order's id
+    "A_DEST": "ParentOrderID",     # tag 5011: the client order's id
     "B_PARENT": "UpstreamRef",     # the destination order's id
-    "B_CHILD": "ParentOrderId",
+    "B_CHILD": "ParentOrderID",
     "C_PARENT": "UpstreamRef",
-    "C_CHILD": "ParentOrderId",
+    "C_CHILD": "ParentOrderID",
 }
 #: System -> (parent level, child level): every system splits its book on the in-system parent id
 #: column (null = parent), docs/design/03 section 3.
@@ -91,22 +91,29 @@ NON_DRIFT_KINDS: frozenset = frozenset({"FEED_STALE", "TRANSIENT", "MISSING_CHIL
 LINK_STATES: Tuple[str, ...] = ("ROOT", "LINKED", "UNRESOLVED", "NO_LINK")
 TOPIC_STATES: Tuple[str, ...] = ("CURRENT", "STALE", "CATCHING_UP")
 
-#: The raw per-system table contract (docs/design/03 section 2): column -> Deephaven type.
+#: The raw per-system table contract (docs/design/03 section 2): column -> Deephaven type. Columns a
+#: FIX 4.2 message carries take the standard FIX field name (the tag in ``FIX42_TAGS``); the two link
+#: columns are the firm's custom tags, configured per system (``OMS_AMPS_TAG_MAP_<X>``); the rest is
+#: the envelope the ingester or the source stamps.
 RAW_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("Date", "String"),
-    ("OrderId", "String"),
-    ("UpstreamRef", "String"),
-    ("ParentOrderId", "String"),
-    ("Symbol", "String"),
-    ("Side", "String"),
-    ("OrderQty", "long"),
-    ("CumQty", "long"),
-    ("LeavesQty", "long"),
-    ("AvgPx", "double"),
-    ("OrdStatus", "String"),
-    ("EventTs", "Instant"),
+    ("OrderID", "String"),         # 37: the system's own order id, the identity of a row
+    ("ClOrdID", "String"),         # 11
+    ("OrigClOrdID", "String"),     # 41
+    ("UpstreamRef", "String"),     # custom tag: the cross-system reference (parents only)
+    ("ParentOrderID", "String"),   # custom tag: the in-system parent (children only)
+    ("Symbol", "String"),          # 55
+    ("Side", "String"),            # 54, the code as sent (1 buy, 2 sell, ...)
+    ("OrderQty", "long"),          # 38
+    ("CumQty", "long"),            # 14
+    ("LeavesQty", "long"),         # 151
+    ("AvgPx", "double"),           # 6
+    ("OrdStatus", "String"),       # 39, the code as sent (0 new, 1 partially filled, 2 filled, 4 canceled, ...)
+    ("ExecType", "String"),        # 150
+    ("MsgType", "String"),         # 35
+    ("TransactTime", "Instant"),   # 60: the OMS's event time
     ("RecvTs", "Instant"),
-    ("SeqNo", "long"),
+    ("MsgSeqNum", "long"),         # 34
     ("Topic", "String"),
     ("KafkaPartition", "int"),
     ("KafkaOffset", "long"),
@@ -116,6 +123,19 @@ RAW_COLUMNS: Tuple[Tuple[str, str], ...] = (
 )
 RAW_COLUMN_NAMES: Tuple[str, ...] = tuple(name for name, _ in RAW_COLUMNS)
 RAW_COLUMN_KINDS: Dict[str, str] = dict(RAW_COLUMNS)
+#: The standard FIX 4.2 tag of every raw column a message carries under its own field name. The
+#: link columns have no standard tag: ``OMS_AMPS_TAG_MAP_<X>`` names them per system.
+FIX42_TAGS: Dict[str, str] = {
+    "37": "OrderID", "11": "ClOrdID", "41": "OrigClOrdID", "55": "Symbol", "54": "Side", "38": "OrderQty",
+    "14": "CumQty", "151": "LeavesQty", "6": "AvgPx", "39": "OrdStatus", "150": "ExecType", "35": "MsgType",
+    "60": "TransactTime", "34": "MsgSeqNum", "75": "Date",  # 75 TradeDate (YYYYMMDD) when the feed carries one
+}
+#: The link columns a system's rows must carry (docs/design/03 section 3): the in-system parent id
+#: everywhere, the cross-system reference where the system's parents reference another system.
+LINK_COLUMNS_BY_SYSTEM: Dict[str, Tuple[str, ...]] = {
+    system: tuple(sorted({LEVEL_LINK_COLUMN[level] for level in levels if level in LEVEL_LINK_COLUMN}))
+    for system, levels in SYSTEM_LEVELS.items()
+}
 #: Columns the ingester (Kafka) or the source (AMPS) stamps; never read from a message body.
 INGESTER_COLUMNS: Tuple[str, ...] = ("RecvTs", "Topic", "KafkaPartition", "KafkaOffset", "SowDeleted")
 
@@ -141,7 +161,7 @@ class Settings:
     feed_stale_sec: int = 120
     feed_catchup_sec: int = 300
     age_clock: str = "recv"  # recv | event
-    parent_id_column: str = "ParentOrderId"
+    parent_id_column: str = "ParentOrderID"
     expect_one_edges: Tuple[str, ...] = ("Cli-Dest", "A-Bp", "Bc-Cp")
     one_table_per_system: bool = True
     topics: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
@@ -162,7 +182,7 @@ class Settings:
         return edge.name in self.expect_one_edges
 
     def age_column(self) -> str:
-        return "EventTs" if self.age_clock == "event" else "RecvTs"
+        return "TransactTime" if self.age_clock == "event" else "RecvTs"
 
     def raw_table_names(self, kind: str, system: str) -> List[str]:
         """``Orders<X>`` (one table per system) or ``Orders<X>_<topic>`` per topic (docs/design/05 §4.3b)."""
@@ -241,7 +261,7 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
         feed_stale_sec=_int(env, "OMS_TRACE_FEED_STALE_SEC", 120, minimum=1),
         feed_catchup_sec=_int(env, "OMS_TRACE_FEED_CATCHUP_SEC", 300, minimum=1),
         age_clock=_choice(env, "OMS_TRACE_AGE_CLOCK", "recv", ("recv", "event")),
-        parent_id_column=env.get("OMS_TRACE_PARENT_ID_COLUMN", "ParentOrderId") or "ParentOrderId",
+        parent_id_column=env.get("OMS_TRACE_PARENT_ID_COLUMN", "ParentOrderID") or "ParentOrderID",
         expect_one_edges=expect_one,
         one_table_per_system=_bool(env, "OMS_TRACE_ONE_TABLE_PER_SYSTEM", True),
         topics=topics,

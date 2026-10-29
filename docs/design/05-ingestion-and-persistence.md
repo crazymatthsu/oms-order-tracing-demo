@@ -94,11 +94,12 @@ DIS    = f"oms_ingest_{SYSTEM.lower()}"
 TOPICS = os.environ["OMS_TOPICS"].split(",")      # this PQ's share of the system's topics (§4.3b)
 TZ     = os.environ.get("OMS_TRACE_TZ", "America/New_York")
 
-value_def = TableDefinition({
-    "OrderId": dt.string, "UpstreamRef": dt.string, "ParentOrderId": dt.string,   # ParentOrderId: in-system parent, null on parents
+value_def = TableDefinition({   # config.RAW_COLUMNS minus the stamped columns: FIX 4.2 field names (doc 03 §2)
+    "OrderID": dt.string, "ClOrdID": dt.string, "OrigClOrdID": dt.string,
+    "UpstreamRef": dt.string, "ParentOrderID": dt.string,   # ParentOrderID: in-system parent, null on parents
     "Symbol": dt.string, "Side": dt.string,
     "OrderQty": dt.long, "CumQty": dt.long, "LeavesQty": dt.long, "AvgPx": dt.double,
-    "OrdStatus": dt.string, "EventTs": dt.Instant, "SeqNo": dt.long,
+    "OrdStatus": dt.string, "ExecType": dt.string, "MsgType": dt.string, "TransactTime": dt.Instant, "MsgSeqNum": dt.long,
 })
 
 ONE_TABLE = os.environ.get("OMS_TRACE_ONE_TABLE_PER_SYSTEM", "true") == "true"
@@ -126,7 +127,7 @@ for topic in TOPICS:                          # one ingester per topic (§4.3b)
 ```
 
 B's and C's parent and child orders arrive on **one topic per system** (Q18) and land in one
-table; the lineage adapter splits them on `ParentOrderId`. The OMS teams publish a parent before
+table; the lineage adapter splits them on `ParentOrderID`. The OMS teams publish a parent before
 its children and, within a system, the parent may be assumed to arrive first (Q7). The topic is
 keyed by **order id** (Q11), so the ingester can preserve that order only within a Kafka
 partition; the lineage DAG does not depend on it (A15), and any child-first arrival a lagging

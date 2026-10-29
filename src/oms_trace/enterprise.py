@@ -92,7 +92,7 @@ def dtw_options(settings: config.Settings, system: str, column_partition: Option
         "column_partition": column_partition or datetime.now(ZoneInfo(settings.tz)).date().isoformat(),
         "internal_partition": internal_partition,
         # exactly-once across a restart needs a per-partition monotonic sequence; AMPS rows carry none,
-        # so duplicates after a restart are possible and harmless under last_by(OrderId)
+        # so duplicates after a restart are possible and harmless under last_by(OrderID)
         "sequence_column": sequence_column,
     }
 

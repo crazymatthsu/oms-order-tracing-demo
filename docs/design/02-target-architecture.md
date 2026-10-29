@@ -37,7 +37,7 @@ A_ROOT (A)  1─1  B_PARENT (B)  1─n  B_CHILD (B)  1─1  C_PARENT (C)  1─n 
         cross-system        inside B            cross-system        inside C
 ```
 
-Two raw tables (B, C) each hold two levels; the adapter splits them by role (`ParentOrderId`
+Two raw tables (B, C) each hold two levels; the adapter splits them by role (`ParentOrderID`
 null = parent). Root resolution is four `natural_join`s top-down; every node ends up with
 `RootId` (the A order) or `RootState = UNRESOLVED`.
 
@@ -131,7 +131,7 @@ reconciliation PQ are gone; the shard workers are a later phase of the same line
    checkpoints (doc 05 §4–5).
 2. **Last state and role split.** `oms-lineage` opens the three live tables over the `Date`
    window, keeps `last_by("OrderId")` per raw table, and splits B and C into parent and child
-   levels on `ParentOrderId` (A11). Five level tables.
+   levels on `ParentOrderID` (A11). Five level tables.
 3. **Link, top-down.** `B_PARENT` joins `A_ROOT` on the A id; `B_CHILD` joins `B_PARENT` on
    the in-system parent id; `C_PARENT` joins `B_CHILD` on the B child id; `C_CHILD` joins
    `C_PARENT`. Each join carries the parent's `RootId` down, so every node gets its A root or
@@ -224,10 +224,10 @@ Query, a managed long-running worker.
 | D6 | Aging over receive time; transient gaps are not drift | instantaneous diff | 00 F12, 04 §5 |
 | D7 | Drift history via DTW to `OMS_TRACE`; consumers subscribe to small aggregates | everything over Barrage; everything via Kafka | 02 §6, 05 §8 |
 | D8 | Native id columns for joins; synthetic `NodeKey` strings only in UI slices | `System + "|" + OrderId` on 100 M rows | 06 §1 |
-| D9 | Role split on `ParentOrderId` inside the adapter: null = parent, non-null = child (Q15, answered 2026-10-26); an empty string is a `NO_LINK` child, never a silently misfiled parent | separate parent/child tables from the feeds; a role/type column | 03 §3, Q18 |
+| D9 | Role split on `ParentOrderID` inside the adapter: null = parent, non-null = child (Q15, answered 2026-10-26); an empty string is a `NO_LINK` child, never a silently misfiled parent | separate parent/child tables from the feeds; a role/type column | 03 §3, Q18 |
 | D10 | Python Core+ scripts from Git; a Python reference oracle tested row for row | Groovy; untested formulas | 09, 10 |
 | D12 | Open quantity reconciled per edge too (`RouteGap`): `HELD` amber on in-system edges, `OVER_ROUTED` / `CHILD_STILL_OPEN` red, `LEAVES_MISMATCH` red on the 1 : 1 edges (Q14 answered 2026-10-26) | executed quantity only | 03 §6, 04 §3 |
-| D13 | One topic and one raw table per system, parents and children split by `ParentOrderId` (Q18); parent-before-child arrival is assumed within a system (Q7) but, with topics keyed by order id (Q11), holds per partition only, so the design does not rely on it | two topics / two tables per system | 03 §2, 05 §4 |
+| D13 | One topic and one raw table per system, parents and children split by `ParentOrderID` (Q18); parent-before-child arrival is assumed within a system (Q7) but, with topics keyed by order id (Q11), holds per partition only, so the design does not rely on it | two topics / two tables per system | 03 §2, 05 §4 |
 | D14 | Aging clock configurable: receive time by default, event time (GMT tag 60, comparable across systems, Q12) as an option; the execution match key always uses event time | event time only (a republished old report would age instantly) | 03 §7 |
 | D15 | Per-channel feed health in the lineage DAG: a stale or catching-up topic suppresses the gaps it touches as `FEED_STALE` with one alert per topic (Q7 answered 2026-10-26) | paging on every gap during an outage; suspending the whole view while any feed is down | 03 §4.4, 04 §5, 08 §3 R8 |
 | D11 | Execution-level identification by **multiset match on `(Qty, Px, TransactTime)`**, computed **lazily for parents with an aged gap** (`where_in`), busts netted by `ExecRefId` | matching every execution on every edge (O(executions) heap); matching by exec id (ids do not cross hops, Q17) | 02 §10, 04 §10, 06 §1.5 |

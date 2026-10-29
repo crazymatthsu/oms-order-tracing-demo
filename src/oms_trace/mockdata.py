@@ -67,18 +67,24 @@ class Book:
         return [r for system in config.SYSTEMS for r in self.rows[system]]
 
     def find(self, system: str, order_id: str) -> List[Row]:
-        return [r for r in self.rows[system] if r["OrderId"] == order_id]
+        return [r for r in self.rows[system] if r["OrderID"] == order_id]
 
     def last(self, system: str, order_id: str) -> Row:
         return self.find(system, order_id)[-1]
 
 
+#: FIX 4.2 codes, as a drop copy sends them and as the raw contract keeps them (Q13, untranslated).
+BUY, SELL = "1", "2"                                   # tag 54
+NEW, PARTIALLY_FILLED, FILLED, CANCELED = "0", "1", "2", "4"  # tags 39 and 150
+EXECUTION_REPORT = "8"                                 # tag 35
+
+
 def _status(qty: int, cum: int, leaves: int, canceled: bool) -> str:
     if canceled:
-        return "CANCELED"
+        return CANCELED
     if cum >= qty:
-        return "FILLED"
-    return "PARTIALLY_FILLED" if cum > 0 else "NEW"
+        return FILLED
+    return PARTIALLY_FILLED if cum > 0 else NEW
 
 
 def raw_row(
@@ -103,21 +109,26 @@ def raw_row(
     """One raw state message (docs/design/03 section 2). ``parent`` None marks a parent order."""
     if leaves is None:
         leaves = 0 if canceled else max(qty - cum, 0)
+    status = status if status is not None else _status(qty, cum, leaves, canceled)
     return {
         "Date": date,
-        "OrderId": order_id,
+        "OrderID": order_id,
+        "ClOrdID": f"cl-{order_id}",
+        "OrigClOrdID": None,
         "UpstreamRef": upstream,
-        "ParentOrderId": parent,
+        "ParentOrderID": parent,
         "Symbol": symbol,
         "Side": side,
         "OrderQty": qty,
         "CumQty": cum,
         "LeavesQty": leaves,
         "AvgPx": avg_px if avg_px is not None else (100.0 if cum > 0 else None),
-        "OrdStatus": status if status is not None else _status(qty, cum, leaves, canceled),
-        "EventTs": recv - 20 * MS if event is None else event,
+        "OrdStatus": status,
+        "ExecType": status,  # the mock's states are execution reports whose ExecType mirrors OrdStatus
+        "MsgType": EXECUTION_REPORT,
+        "TransactTime": recv - 20 * MS if event is None else event,
         "RecvTs": recv,
-        "SeqNo": seq,
+        "MsgSeqNum": seq,
         "Topic": topic,
         "KafkaPartition": sum(ord(c) for c in order_id) % 4,
         "KafkaOffset": 0,  # assigned by Book.add
@@ -139,7 +150,7 @@ def family(
     name: str,
     *,
     symbol: str = "AAPL",
-    side: str = "BUY",
+    side: str = BUY,
     qty: int = 1000,
     splits: Optional[Sequence[int]] = None,
     cc_splits: Optional[Sequence[Sequence[int]]] = None,
@@ -201,12 +212,13 @@ def _set(book: Book, system: str, order_id: str, **values: Any) -> Row:
     row.update(values)
     if "CumQty" in values or "LeavesQty" in values or "OrderQty" in values:
         if "OrdStatus" not in values:
-            row["OrdStatus"] = _status(row["OrderQty"], row["CumQty"], row["LeavesQty"], row["OrdStatus"] == "CANCELED")
+            row["OrdStatus"] = _status(row["OrderQty"], row["CumQty"], row["LeavesQty"], row["OrdStatus"] == CANCELED)
+        row["ExecType"] = row["OrdStatus"]
     return row
 
 
 def _remove(book: Book, system: str, order_id: str) -> None:
-    book.rows[system] = [r for r in book.rows[system] if r["OrderId"] != order_id]
+    book.rows[system] = [r for r in book.rows[system] if r["OrderID"] != order_id]
 
 
 def _clean(book: Book, name: str, note: str, **kw: Any) -> Scenario:
@@ -238,8 +250,8 @@ def scenario_catalog(book: Book) -> None:
     _set(book, "B", s.ids["Bp"], CumQty=900, LeavesQty=100)
 
     s = _clean(book, "TR", "transient: as missing_at_c, but C's state is 10 s old")
-    _set(book, "C", s.ids["Cp2"], CumQty=300, LeavesQty=100, RecvTs=NOW - 10 * SEC, EventTs=NOW - 10 * SEC - 20 * MS)
-    _set(book, "C", s.ids["Cc2a"], CumQty=300, LeavesQty=100, RecvTs=NOW - 10 * SEC, EventTs=NOW - 10 * SEC - 20 * MS)
+    _set(book, "C", s.ids["Cp2"], CumQty=300, LeavesQty=100, RecvTs=NOW - 10 * SEC, TransactTime=NOW - 10 * SEC - 20 * MS)
+    _set(book, "C", s.ids["Cc2a"], CumQty=300, LeavesQty=100, RecvTs=NOW - 10 * SEC, TransactTime=NOW - 10 * SEC - 20 * MS)
 
     s = _clean(book, "BCM", "bc_missing (late_bc_hours / bc_never): Bc1 never arrived; Cp1 has waited 2 h", recv=NOW - 2 * HOUR)
     _remove(book, "B", s.ids["Bc1"])
@@ -258,21 +270,21 @@ def scenario_catalog(book: Book) -> None:
 
     s = _clean(book, "DD", "two_dest: a second destination order references the same client order")
     dup = dict(book.last("A", s.ids["Dest"]))
-    dup.update(OrderId=f"Dest-{s.name}-dup", RecvTs=dup["RecvTs"] + MS, EventTs=dup["EventTs"] + MS)
+    dup.update(OrderID=f"Dest-{s.name}-dup", RecvTs=dup["RecvTs"] + MS, TransactTime=dup["TransactTime"] + MS)
     book.add("A", dup)
-    s.ids["DestDup"] = dup["OrderId"]
+    s.ids["DestDup"] = dup["OrderID"]
 
     s = _clean(book, "NL", "no_link: Cp1 carries no B reference")
     _set(book, "C", s.ids["Cp1"], UpstreamRef=None)
 
     s = _clean(book, "EP", "empty_parent_id: Bc1 carries an empty-string parent id (a child with no link, by contract)")
-    _set(book, "B", s.ids["Bc1"], ParentOrderId="")
+    _set(book, "B", s.ids["Bc1"], ParentOrderID="")
 
     s = _clean(book, "TB", "two_b_parents: a second B parent references the same A")
     dup = dict(book.last("B", s.ids["Bp"]))
-    dup.update(OrderId=f"Bp-{s.name}-dup", RecvTs=dup["RecvTs"] + MS, EventTs=dup["EventTs"] + MS)
+    dup.update(OrderID=f"Bp-{s.name}-dup", RecvTs=dup["RecvTs"] + MS, TransactTime=dup["TransactTime"] + MS)
     book.add("B", dup)
-    s.ids["BpDup"] = dup["OrderId"]
+    s.ids["BpDup"] = dup["OrderID"]
 
     s = family(book, "NRC", qty=1400, splits=[600, 400, 400], cc_splits=[[300, 300], [400], [400]], fill=1.0,
                note="b_child_never_reached_c: Bc3 (400, unfilled) has no C parent")
@@ -284,8 +296,8 @@ def scenario_catalog(book: Book) -> None:
     for key in ("Cc3a",):
         _remove(book, "C", s.ids[key])
 
-    s = _clean(book, "MM", "mismatch: Cc1a is a SELL under a BUY C parent")
-    _set(book, "C", s.ids["Cc1a"], Side="SELL")
+    s = _clean(book, "MM", "mismatch: Cc1a is a sell (54=2) under a buy C parent")
+    _set(book, "C", s.ids["Cc1a"], Side=SELL)
 
     s = _clean(book, "OF", "overfill: Cp1 shows CumQty above its OrderQty")
     _set(book, "C", s.ids["Cp1"], CumQty=700, LeavesQty=0)
@@ -293,10 +305,10 @@ def scenario_catalog(book: Book) -> None:
     s = _clean(book, "DUP", "duplicate_messages: Cc1a's state delivered twice")
     book.add("C", dict(book.last("C", s.ids["Cc1a"])))
 
-    s = _clean(book, "OOO", "out_of_order_same_order: Cc2a's SeqNo 2 (400) arrives before SeqNo 1 (300)")
-    _set(book, "C", s.ids["Cc2a"], SeqNo=2)
+    s = _clean(book, "OOO", "out_of_order_same_order: Cc2a's MsgSeqNum 2 (400) arrives before MsgSeqNum 1 (300)")
+    _set(book, "C", s.ids["Cc2a"], MsgSeqNum=2)
     stale = dict(book.last("C", s.ids["Cc2a"]))
-    stale.update(SeqNo=1, CumQty=300, LeavesQty=100, OrdStatus="PARTIALLY_FILLED", RecvTs=stale["RecvTs"] + MS)
+    stale.update(MsgSeqNum=1, CumQty=300, LeavesQty=100, OrdStatus=PARTIALLY_FILLED, RecvTs=stale["RecvTs"] + MS)
     book.add("C", stale)
 
     s = _clean(book, "MID", "midnight: Bc1's state is on yesterday's Date partition")
@@ -326,13 +338,13 @@ def scenario_catalog(book: Book) -> None:
     _set(book, "C", s.ids["Cc1b"], OrderQty=400, CumQty=150, LeavesQty=250)
 
     s = _clean(book, "CNP", "cancel_not_propagated: everything canceled, Cc1b still working 300")
-    _set(book, "A", s.ids["A"], CumQty=700, LeavesQty=0, OrdStatus="CANCELED")
-    _set(book, "A", s.ids["Dest"], CumQty=700, LeavesQty=0, OrdStatus="CANCELED")
-    _set(book, "B", s.ids["Bp"], CumQty=700, LeavesQty=0, OrdStatus="CANCELED")
-    _set(book, "B", s.ids["Bc1"], CumQty=300, LeavesQty=0, OrdStatus="CANCELED")
-    _set(book, "C", s.ids["Cp1"], CumQty=300, LeavesQty=0, OrdStatus="CANCELED")
+    _set(book, "A", s.ids["A"], CumQty=700, LeavesQty=0, OrdStatus=CANCELED)
+    _set(book, "A", s.ids["Dest"], CumQty=700, LeavesQty=0, OrdStatus=CANCELED)
+    _set(book, "B", s.ids["Bp"], CumQty=700, LeavesQty=0, OrdStatus=CANCELED)
+    _set(book, "B", s.ids["Bc1"], CumQty=300, LeavesQty=0, OrdStatus=CANCELED)
+    _set(book, "C", s.ids["Cp1"], CumQty=300, LeavesQty=0, OrdStatus=CANCELED)
     _set(book, "C", s.ids["Cc1a"], CumQty=300, LeavesQty=0)
-    _set(book, "C", s.ids["Cc1b"], CumQty=0, LeavesQty=300, OrdStatus="NEW")
+    _set(book, "C", s.ids["Cc1b"], CumQty=0, LeavesQty=300, OrdStatus=NEW)
 
     s = _clean(book, "LMX", "leaves_mismatch_cross: A has 400 open, its B parent 300")
     _set(book, "A", s.ids["A"], CumQty=600, LeavesQty=400)
@@ -355,7 +367,7 @@ def scenario_catalog(book: Book) -> None:
     catchup_topics = {"A": TOPICS["A"], "B": (TOPIC_B_CATCHUP,), "C": TOPICS["C"]}
     s = _clean(book, "FC", "feed_catching_up: B's channel replays a backlog; Bc2 is short", topics=catchup_topics)
     for key in ("Bp", "Bc1", "Bc2"):
-        _set(book, "B", s.ids[key], RecvTs=NOW - 30 * SEC, EventTs=NOW - 2 * HOUR)
+        _set(book, "B", s.ids[key], RecvTs=NOW - 30 * SEC, TransactTime=NOW - 2 * HOUR)
     _set(book, "B", s.ids["Bc2"], CumQty=300, LeavesQty=100)
 
     family(book, "FAN", qty=30000, splits=[100] * 300, cc_splits=[[20] * 5] * 300, fill=1.0,
@@ -372,7 +384,7 @@ def healthy_families(book: Book, families: int, seed: int) -> None:
         cc_q = [split(q, rng.randint(1, 4)) for q in bc_q]
         fill = rng.choice((0.0, 0.3, 0.7, 1.0))
         recv = NOW - rng.randint(45, 30 * 60) * SEC
-        family(book, f"H{n:02d}", symbol=rng.choice(SYMBOLS), side=rng.choice(("BUY", "SELL")), qty=qty,
+        family(book, f"H{n:02d}", symbol=rng.choice(SYMBOLS), side=rng.choice((BUY, SELL)), qty=qty,
                splits=bc_q, cc_splits=cc_q, fill=fill, recv=recv, note="healthy")
     # Every regular channel must have spoken within the stale threshold: a heartbeat family per topic.
     latest: Dict[str, int] = {}

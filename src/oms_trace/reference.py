@@ -56,11 +56,11 @@ def _q(value: Any) -> int:
 
 
 def last_states(rows: Iterable[Row], dates: Set[str]) -> Dict[str, Row]:
-    """``last_by(OrderId)`` over the Date window: the latest row in arrival order per order."""
+    """``last_by(OrderID)`` over the Date window: the latest row in arrival order per order."""
     latest: Dict[str, Row] = {}
     for row in rows:
         if row["Date"] in dates:
-            latest[row["OrderId"]] = row
+            latest[row["OrderID"]] = row
     return latest
 
 
@@ -74,7 +74,7 @@ def canonical(level: str, row: Row, settings: config.Settings) -> Row:
     return {
         "Level": level,
         "System": LEVEL_SYSTEM[level],
-        "OrderId": row["OrderId"],
+        "OrderId": row["OrderID"],
         "LinkId": link,
         "Symbol": _s(row.get("Symbol")),
         "Side": _s(row.get("Side")),
@@ -167,7 +167,7 @@ def feed_health(rows_by_system: Mapping[str, Iterable[Row]], dates: Set[str], se
                 continue
             topic = _s(row.get("Topic"))
             last_recv[topic] = max(last_recv.get(topic, 0), row["RecvTs"])
-            ev = row.get("EventTs")
+            ev = row.get("TransactTime")
             if ev is not None:
                 last_event[topic] = ev if last_event.get(topic) is None else max(last_event[topic], ev)
             else:
@@ -238,8 +238,8 @@ def reconcile(rows_by_system: Mapping[str, List[Row]], settings: config.Settings
         states = last_states(rows_by_system.get(system, []), dates)
         parents, children = split_roles(states, system, settings)
         parent_level, child_level = config.SYSTEM_LEVELS[system]
-        res.nodes[parent_level] = {r["OrderId"]: canonical(parent_level, r, settings) for r in parents}
-        res.nodes[child_level] = {r["OrderId"]: canonical(child_level, r, settings) for r in children}
+        res.nodes[parent_level] = {r["OrderID"]: canonical(parent_level, r, settings) for r in parents}
+        res.nodes[child_level] = {r["OrderID"]: canonical(child_level, r, settings) for r in children}
     for node in res.nodes["A_ROOT"].values():
         node.update(RootId=node["OrderId"], RootState="RESOLVED", ParentState="ROOT")
 
