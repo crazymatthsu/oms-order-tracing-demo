@@ -21,6 +21,7 @@ Reading order:
 | [09 Testing and validation](09-testing-and-validation.md) | oracle-based tests, scenario catalog, sizing run, pre-cutover validation | build the tests or sign off |
 | [10 Implementation plan](10-implementation-plan.md) | milestones, module layout, reuse from `deephaven-fix42-dashboard`, risks, done | plan the work |
 | [11 AMPS SOW source](11-amps-sow-source.md) | latest order states from AMPS SOW topics instead of Kafka: why it fits, in-worker client + Derived Table Writer (D16), bookmark replay (D17), FIX 4.2 bodies with per-system link tags (D18), deletes, snapshot-aware feed health, heartbeats | the OMS publishes to AMPS, or ask whether the DIS can be skipped |
+| [12 last_by memory model](12-last-by-memory-model.md) | what a `last_by` holds in Community and Enterprise: an index into a disk-backed partition, an index into a heap table, or a copy over a blink table; why the lineage heap scales with orders, not messages; checklist items | size the lineage worker or question the memory estimates |
 
 The topology (clarified 2026-10-25): A holds the root order; B holds one parent per root and
 many children; C holds one parent per B child and many children under each — six levels, five
